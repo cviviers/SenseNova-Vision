@@ -1,0 +1,5 @@
+# Copyright 2026 SenseTime Group Inc. and/or its affiliates.
+# Extra packages for the Blackwell Docker image, installed on top of requirements.txt.
+
+# LoRA / QLoRA adapters for single-GPU fine-tuning (train/finetune_lora.py).
+peft==0.15.2

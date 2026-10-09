@@ -1,0 +1,42 @@
+# Copyright 2026 SenseTime Group Inc. and/or its affiliates.
+# Single-GPU LoRA demo (train/finetune_lora.py). Generate the data first:
+#   python tools/make_lora_demo_data.py --output_dir datas/lora_demo
+# Groups use the same keys as data/configs/cv_unify/*.yaml; `datasets:` registers
+# JSONLs inline instead of editing data/dataset_info.py.
+
+cv_detection_bbox:
+  datasets:
+    glorp_bbox:
+      data_dir: datas/lora_demo/train
+      jsonl_path: datas/lora_demo/train/glorp_bbox.jsonl
+      num_total_samples: 400
+  image_transform_args:
+    image_stride: 14
+    max_image_size: 980
+    min_image_size: 378
+  frame_sampler_args:
+    max_num_frames: 12
+    min_num_frames: 8
+  shuffle_lines: True
+  shuffle_seed: 0
+  task_prompt: raw_prompt
+  weight: 0.5
+
+seg_sft:
+  datasets:
+    glorp_seg:
+      data_dir: datas/lora_demo/train
+      jsonl_path: datas/lora_demo/train/glorp_seg.jsonl
+      num_total_samples: 400
+  image_transform_args:
+    image_stride: 16
+    max_image_size: 1024
+    min_image_size: 512
+  vit_image_transform_args:
+    image_stride: 14
+    max_image_size: 980
+    min_image_size: 224
+  shuffle_lines: True
+  shuffle_seed: 0
+  task_prompt: no_prefix_promt
+  weight: 0.5

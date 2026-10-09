@@ -1,0 +1,44 @@
+# Copyright 2026 SenseTime Group Inc. and/or its affiliates.
+# Usage (from the repository root):
+#   docker compose -f docker/docker-compose.yml build
+#   docker compose -f docker/docker-compose.yml up -d          # long-running dev container
+#   docker compose -f docker/docker-compose.yml exec sensenova bash
+# Host paths are configured in docker/.env (see docker/.env.example).
+
+name: sensenova-vision
+
+services:
+  sensenova:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: sensenova-vision:blackwell-cu128
+    container_name: sensenova-vision
+    gpus: all
+    # Run as the host user so files written to the bind-mounted repo stay editable.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    environment:
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HOME=/tmp/home
+      - USER=sensenova
+      - HF_HOME=/hf-cache
+      - HF_TOKEN=${HF_TOKEN:-}
+      - WANDB_MODE=${WANDB_MODE:-offline}
+      # 32GB defaults: BF16 with ~4GB of layers in CPU RAM. Use nf4 for ~2x faster
+      # dense tasks and more headroom; on 48GB+ GPUs set SENSENOVA_MAX_MEM_PER_GPU=80GiB.
+      - SENSENOVA_DTYPE=${SENSENOVA_DTYPE:-bf16}
+      - SENSENOVA_MAX_MEM_PER_GPU=${SENSENOVA_MAX_MEM_PER_GPU:-25GiB}
+    volumes:
+      - ..:/workspace/SenseNova-Vision
+      - ${MODEL_DIR:?set MODEL_DIR in docker/.env}:/models/SenseNova-Vision-7B-MoT
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/hf-cache
+      - ${DATASETS_DIR:-./datasets-unset}:/datasets:ro
+    ports:
+      - "${DEMO_PORT:-9001}:9001"
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]

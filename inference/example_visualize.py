@@ -64,7 +64,7 @@ if __name__ == "__main__":
 
     model = SenseNovaVisionModel(
         model_path=resolve_model_path(),
-        dtype="bf16",
+        dtype=os.environ.get("SENSENOVA_DTYPE", "bf16"),
     )
     
     # Example 1: general understanding
