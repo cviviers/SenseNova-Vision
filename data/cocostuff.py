@@ -17,11 +17,11 @@ paper's segmentation data: greedy farthest-point sampling in the RGB cube (deter
 reserved for unlabeled pixels and white kept free for binary masks. ``write_class_table`` exports it.
 
 Modes (one fixed prompt or template each; see the PROMPT constants below):
-    img2palette          photo -> full map, every class in its colour, unlabeled black
+    img2palette          photo -> full map, every class in its colour, unlabeled black (fixed prompt, no colour key)
     img2palette_partial  photo -> map of the requested classes only (mostly classes present in the image,
                          plus a few absent distractors); everything else black
     img2binseg           photo -> binary mask of one class (present with probability binary_present_prob)
-    seg2img              full colour map -> photo
+    seg2img              full colour map -> photo (colour key of the classes present in the input map)
 """
 
 import io
@@ -93,10 +93,16 @@ def colour_key(class_ids):
 
 
 # ----------------------------------------------------------------------------- prompts
+# img2palette and seg2img start with an explicit task header that states the direction (input -> output).
+# A full 171-class colour key would cost ~2,800 tokens per sample (about half the sequence), so:
+#   img2palette  no key: the palette is a fixed convention learned from the targets (listing the classes
+#                present would leak the answer, which is unknown at inference);
+#   seg2img      key for the classes present in the input map only (derivable from the input itself).
 IMG2PALETTE_PROMPT = (
-    "Segment this photograph into a COCO-Stuff semantic segmentation map. Colour every pixel with exactly one of "
-    f"these class colours: {colour_key(USED_IDS)}. Colour pixels that belong to none of these classes black "
-    "(0, 0, 0). Use flat colours only, with no shading or texture."
+    "Task: photo to segmentation map. The input is a photograph. Output its COCO-Stuff semantic segmentation "
+    "map, not a photograph: colour every pixel with the fixed COCO-Stuff palette colour of its class (171 "
+    "classes), and colour pixels that belong to none of these classes black (0, 0, 0). Use flat colours only, "
+    "with no shading or texture."
 )
 PARTIAL_PROMPT_TEMPLATE = (
     "Segment only these COCO-Stuff classes in this photograph: {names}. Colour them with exactly these colours: "
@@ -108,12 +114,17 @@ BINARY_PROMPT_TEMPLATE = (
     "all {phrase} pixels in white (255, 255, 255) and everything else in black (0, 0, 0). If the image has no "
     "{phrase}, output an all-black mask."
 )
-SEG2IMG_PROMPT = (
-    "Transform this COCO-Stuff semantic segmentation map into a realistic photograph. The colours in the map "
-    f"mean: {colour_key(USED_IDS)}; black (0, 0, 0) marks unlabeled regions. Strictly preserve the position, "
-    "shape, and boundaries of every region. Generate natural textures, materials, and lighting, like an authentic "
-    "COCO photograph. Do not retain any segmentation colours."
+SEG2IMG_PROMPT_TEMPLATE = (
+    "Task: segmentation map to photo. The input is a COCO-Stuff semantic segmentation map. Output a realistic "
+    "photograph, not a segmentation map. The colours in this map mean: {key}; black (0, 0, 0) marks unlabeled "
+    "regions. Strictly preserve the position, shape, and boundaries of every region. Generate natural textures, "
+    "materials, and lighting, like an authentic COCO photograph. Do not retain any segmentation colours."
 )
+
+
+def seg2img_prompt(label):
+    """SEG2IMG prompt for one input map: the colour key lists the classes present in that map."""
+    return SEG2IMG_PROMPT_TEMPLATE.format(key=colour_key([int(c) for c in np.unique(label) if c]) or "no classes")
 
 
 def partial_prompt(class_ids):
@@ -152,7 +163,7 @@ def sample_task(rng, label, mode, partial_present_range=(1, 8), partial_absent_m
         cid = rng.choice(pool)
         return None, binary_prompt(cid), binary_image(label, cid), {"class": cid, "present": cid in present}
     if mode == "seg2img":
-        return palette_image(label), SEG2IMG_PROMPT, None, {}
+        return palette_image(label), seg2img_prompt(label), None, {"classes": present}
     raise ValueError(f"unknown mode {mode!r}")
 
 

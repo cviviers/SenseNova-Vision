@@ -162,8 +162,12 @@ docker exec sensenova-vision bash scripts/eval_celebamask_modes.sh \
 
 | Script | Measures |
 | --- | --- |
-| `inference/benchmark/eval_celebamask_img2palette.py` | photo → palette on the split: outputs snapped to the palette, IoU/F1 per class with `evaluate_celebamask.py`, share of off-palette pixels |
-| `inference/benchmark/eval_celebamask_seg2img.py` | mask → photo: face rate, round-trip layout (the faces re-segmented with the same checkpoint's `img2palette` mode, non-faces scored as background, ratio to the same segmenter on the real photos), FID/KID (clean-fid) against the real photos of the same images, `sheet.jpg` |
+| `inference/benchmark/eval_seg_img2palette.py --dataset celebamask` | photo → palette on the split: outputs snapped to the palette, mIoU over the 18 face classes plus the full `evaluate_celebamask.py` report (F1, L/R merged), share of off-palette pixels |
+| `inference/benchmark/eval_seg_seg2img.py --dataset celebamask` | mask → photo: face rate, round-trip layout (the faces re-segmented with the same checkpoint's `img2palette` mode, non-faces scored as background, ratio to the same segmenter on the real photos), FID/KID (clean-fid) against the real photos of the same images, `sheet.jpg` |
+
+`scripts/eval_celebamask_modes.sh` is a shortcut for `scripts/eval_seg_modes.sh celebamask …`; the same
+scripts evaluate COCO-Stuff (see [`COCOSTUFF.md`](COCOSTUFF.md)). Untuned base model, 2 val images:
+photo → palette mIoU 0.17, mask → photo outputs are copies of the map (face rate 0).
 
 Both resume where they stopped. FID is biased below ~2k images, so compare checkpoints at the same
 `--limit` (KID is the better small-sample number); the round trip shares weights between generator
