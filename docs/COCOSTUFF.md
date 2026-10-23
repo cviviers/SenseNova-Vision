@@ -64,3 +64,5 @@ Both resume where they stopped, generate at the training image size, and apply a
 (no merged copy). FID is biased below ~2k images, so compare checkpoints at equal `--limit` or use KID.
 The untuned base model does not know this palette: photo → palette mIoU ≈ 0, and mask → photo returns a
 recoloured copy of the map.
+
+Full (all-weights) fine-tuning on multi-GPU machines and the LoRA/full comparison: [`FINETUNE.md`](FINETUNE.md).

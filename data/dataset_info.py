@@ -2527,3 +2527,15 @@ DATASET_INFO = {
         },
     },
 }
+
+
+def register_inline_datasets(dataset_meta):
+    """Let a dataset YAML declare its data inline: a group may carry a ``datasets:`` mapping
+    ({name: {data_dir, jsonl_path, num_total_samples, ...}}) instead of entries in DATASET_INFO. The entries are
+    registered here and the group's ``dataset_names`` default to them. Modifies dataset_meta in place."""
+    for group_name, group_args in dataset_meta.items():
+        inline = group_args.pop("datasets", None)
+        if inline:
+            DATASET_INFO.setdefault(group_name, {}).update(inline)
+            group_args.setdefault("dataset_names", list(inline))
+    return dataset_meta

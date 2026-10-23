@@ -172,3 +172,5 @@ photo → palette mIoU 0.17, mask → photo outputs are copies of the map (face 
 Both resume where they stopped. FID is biased below ~2k images, so compare checkpoints at the same
 `--limit` (KID is the better small-sample number); the round trip shares weights between generator
 and judge, so treat it as a consistency check alongside FID.
+
+Full (all-weights) fine-tuning on multi-GPU machines and the LoRA/full comparison: [`FINETUNE.md`](FINETUNE.md).

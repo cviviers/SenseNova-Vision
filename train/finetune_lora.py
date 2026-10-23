@@ -41,7 +41,7 @@ from transformers.optimization import get_cosine_schedule_with_warmup
 
 from data.data_utils import add_special_tokens
 from data.dataset_base import DataConfig, PackedDataset, collate_wrapper
-from data.dataset_info import DATASET_INFO
+from data.dataset_info import register_inline_datasets
 from modeling.autoencoder import load_ae
 from modeling.bagel import (
     Bagel,
@@ -54,6 +54,7 @@ from modeling.bagel import (
 from modeling.bagel.qwen2_navit import Qwen2MoTDecoderLayer
 from modeling.qwen2 import Qwen2Tokenizer
 from train.pretrain_unified_navit import _encode_padded_images_in_chunks
+from train.train_utils import accumulate_groups, per_group_losses, summarize_groups
 
 CHECKPOINT_WRAPPER_PREFIX = "_checkpoint_wrapped_module."
 LAYER_PREFIX = r"language_model\.model\.layers\.\d+\."
@@ -229,12 +230,8 @@ def build_dataloader(args: FinetuneArguments, tokenizer, new_token_ids, vae_conf
     with open(args.dataset_config_file) as f:
         dataset_meta = yaml.safe_load(f)
 
-    # Allow small custom datasets to be declared inline instead of editing data/dataset_info.py.
-    for group_name, group_args in dataset_meta.items():
-        inline = group_args.pop("datasets", None)
-        if inline:
-            DATASET_INFO.setdefault(group_name, {}).update(inline)
-            group_args.setdefault("dataset_names", list(inline))
+    # Allow datasets to be declared inline instead of editing data/dataset_info.py.
+    register_inline_datasets(dataset_meta)
 
     dataset_config = DataConfig(grouped_datasets=dataset_meta)
     dataset_config.vit_patch_size = 14
@@ -286,31 +283,6 @@ def compute_loss(loss_dict: dict, args: FinetuneArguments):
     return loss, logs
 
 
-@torch.no_grad()
-def per_group_losses(loss_dict, data, groups):
-    """Sum and token count of the image (mse) and text (ce) losses per sample group (e.g. a dataset's mode).
-
-    Samples sit in the packed sequence in the same order as `groups`; each loss row belongs to the
-    sample whose span (from sample_lens) contains its sequence position.
-    """
-    ends = torch.cumsum(torch.as_tensor(data["sample_lens"], device="cpu"), 0)
-    out = {}
-    for key, index_key, reduce in (("mse", "mse_loss_indexes", lambda x: x.float().mean(-1)),
-                                   ("ce", "ce_loss_indexes", lambda x: x.float())):
-        values = loss_dict.get(key)
-        if values is None or values.numel() == 0 or index_key not in data:
-            continue
-        sample_ids = torch.searchsorted(ends, data[index_key].cpu(), right=True)
-        per_token = reduce(values.detach()).cpu()
-        for sid in sample_ids.unique().tolist():
-            sel = sample_ids == sid
-            total, count = out.setdefault(groups[sid], {}).get(key, (0.0, 0))
-            out[groups[sid]][key] = (total + float(per_token[sel].sum()), count + int(sel.sum()))
-    for group in out:
-        out[group]["samples"] = groups.count(group)
-    return out
-
-
 def main():
     (args,) = HfArgumentParser(FinetuneArguments).parse_args_into_dataclasses()
     assert torch.cuda.is_available(), "CUDA is required"
@@ -332,6 +304,12 @@ def main():
     vae_model.to(device).eval().requires_grad_(False)
 
     adapter_config = inject_lora(model, args)
+    # Keep the trainable LoRA weights (and so their AdamW states) in FP32: with a BF16 base they would
+    # otherwise inherit BF16, whose ~3 significant digits round small updates away. Autocast still runs
+    # the matmuls in BF16.
+    for param in model.parameters():
+        if param.requires_grad:
+            param.data = param.data.float()
     model.to(device)
     apply_activation_checkpointing(
         model,
@@ -378,12 +356,7 @@ def main():
                 print(f"[finetune] WARNING per-group mse {total / count:.4f} != batch mse {logs['mse']:.4f}: "
                       f"groups={groups} sample_lens={list(data['sample_lens'])} mse_rows={loss_dict['mse'].shape} "
                       f"mapped={count}", flush=True)
-            for group, vals in batch_groups.items():
-                acc = window["groups"].setdefault(group, {"mse": [0.0, 0], "ce": [0.0, 0], "samples": 0})
-                acc["samples"] += vals.pop("samples")
-                for key, (total, count) in vals.items():
-                    acc[key][0] += total
-                    acc[key][1] += count
+            accumulate_groups(window["groups"], batch_groups)
 
         (loss / args.gradient_accumulation_steps).backward()
         window["loss"].append(float(loss))
@@ -405,10 +378,7 @@ def main():
                 return sum(xs) / len(xs) if xs else math.nan
 
             elapsed = time() - t_log
-            per_group = {
-                g: {k: acc[k][0] / acc[k][1] for k in ("mse", "ce") if acc[k][1]} | {"samples": acc["samples"]}
-                for g, acc in sorted(window["groups"].items())
-            }
+            per_group = summarize_groups(window["groups"])
             group_text = " ".join(
                 f"{k}[{g}]={v[k]:.4f}" for g, v in per_group.items() for k in ("mse", "ce") if k in v
             )
