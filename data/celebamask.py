@@ -60,10 +60,12 @@ def colour_key(class_ids=FACE_CLASS_IDS):
 
 
 # ----------------------------------------------------------------------------- prompts
+# img2palette and seg2img share the colour key, so each starts with an explicit task header that states the
+# direction (input -> output) before anything else.
 IMG2PALETTE_PROMPT = (
-    "Segment this face photograph into a CelebAMask-HQ semantic face segmentation map. Colour every pixel with "
-    f"exactly one of these colours: {colour_key()}; background is black (0, 0, 0). Use flat colours only, with "
-    "no shading or texture."
+    "Task: face photo to segmentation map. The input is a face photograph. Output its CelebAMask-HQ semantic "
+    "face segmentation map, not a photograph. Colour every pixel with exactly one of these colours: "
+    f"{colour_key()}; background is black (0, 0, 0). Use flat colours only, with no shading or texture."
 )
 
 PARTIAL_PROMPT_TEMPLATE = (
@@ -79,8 +81,9 @@ BINARY_PROMPT_TEMPLATE = (
 )
 
 SEG2IMG_PROMPT = (
-    "Transform this semantic face segmentation map into a realistic human portrait photograph. The colours in "
-    f"the map mean: {colour_key()}; background is black (0, 0, 0). Strictly preserve the position, shape, and "
+    "Task: segmentation map to face photo. The input is a CelebAMask-HQ semantic face segmentation map. Output a "
+    "realistic human portrait photograph, not a segmentation map. The colours in the map mean: "
+    f"{colour_key()}; background is black (0, 0, 0). Strictly preserve the position, shape, and "
     "boundaries of every region. Generate natural skin texture, realistic hair strands, detailed facial "
     "features, and coherent photographic lighting, like an authentic, unretouched CelebA face photograph. Do "
     "not retain any segmentation colours."

@@ -65,6 +65,10 @@ RUN pip install "panopticapi @ https://github.com/cocodataset/panopticapi/archiv
         "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
         --extra-index-url ${TORCH_INDEX_URL}
 
+# Generation metrics: clean-fid (FID/KID with the standard Inception weights) and timm (DINOv2 features).
+# --no-deps keeps every pin above unchanged; their dependencies are already installed.
+RUN pip install --no-deps clean-fid==0.1.35 timm==1.0.30
+
 COPY docker/check_env.py /opt/sensenova/check_env.py
 COPY docker/entrypoint.sh /usr/local/bin/sensenova-entrypoint
 RUN chmod +x /usr/local/bin/sensenova-entrypoint

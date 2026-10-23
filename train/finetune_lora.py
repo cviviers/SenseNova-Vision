@@ -286,6 +286,31 @@ def compute_loss(loss_dict: dict, args: FinetuneArguments):
     return loss, logs
 
 
+@torch.no_grad()
+def per_group_losses(loss_dict, data, groups):
+    """Sum and token count of the image (mse) and text (ce) losses per sample group (e.g. a dataset's mode).
+
+    Samples sit in the packed sequence in the same order as `groups`; each loss row belongs to the
+    sample whose span (from sample_lens) contains its sequence position.
+    """
+    ends = torch.cumsum(torch.as_tensor(data["sample_lens"], device="cpu"), 0)
+    out = {}
+    for key, index_key, reduce in (("mse", "mse_loss_indexes", lambda x: x.float().mean(-1)),
+                                   ("ce", "ce_loss_indexes", lambda x: x.float())):
+        values = loss_dict.get(key)
+        if values is None or values.numel() == 0 or index_key not in data:
+            continue
+        sample_ids = torch.searchsorted(ends, data[index_key].cpu(), right=True)
+        per_token = reduce(values.detach()).cpu()
+        for sid in sample_ids.unique().tolist():
+            sel = sample_ids == sid
+            total, count = out.setdefault(groups[sid], {}).get(key, (0.0, 0))
+            out[groups[sid]][key] = (total + float(per_token[sel].sum()), count + int(sel.sum()))
+    for group in out:
+        out[group]["samples"] = groups.count(group)
+    return out
+
+
 def main():
     (args,) = HfArgumentParser(FinetuneArguments).parse_args_into_dataclasses()
     assert torch.cuda.is_available(), "CUDA is required"
@@ -327,11 +352,14 @@ def main():
     loader = build_dataloader(args, tokenizer, new_token_ids, vae_config)
 
     step, micro_step = 0, 0
-    window = {"loss": [], "ce": [], "mse": [], "tokens": 0}
+    window = {"loss": [], "ce": [], "mse": [], "tokens": 0, "groups": {}}
+    log_path = os.path.join(args.output_dir, "train_log.jsonl")
     t_log = time()
     torch.cuda.reset_peak_memory_stats()
     for data in loader:
         data = data.cuda(device).to_dict()
+        # Per-sample group for logging: the dataset's mode when it reports one, else the dataset name.
+        groups = [d.get("mode", d.get("dataset_name", "all")) for d in data.get("batch_data_indexes", [])]
         for key in ("batch_data_indexes", "ce_loss_weights", "grouped_names", "batch_group_name"):
             data.pop(key, None)
         window["tokens"] += int(data["sequence_length"])
@@ -340,7 +368,22 @@ def main():
             if "padded_images" in data:
                 with torch.no_grad(), torch.amp.autocast("cuda", enabled=False):
                     data["padded_latent"] = _encode_padded_images_in_chunks(vae_model, data.pop("padded_images"))
-            loss, logs = compute_loss(model(**data), args)
+            loss_dict = model(**data)
+            loss, logs = compute_loss(loss_dict, args)
+        if groups:
+            batch_groups = per_group_losses(loss_dict, data, groups)
+            total = sum(v["mse"][0] for v in batch_groups.values() if "mse" in v)
+            count = sum(v["mse"][1] for v in batch_groups.values() if "mse" in v)
+            if "mse" in logs and count and abs(total / count - logs["mse"]) > 1e-3 * max(1.0, logs["mse"]):
+                print(f"[finetune] WARNING per-group mse {total / count:.4f} != batch mse {logs['mse']:.4f}: "
+                      f"groups={groups} sample_lens={list(data['sample_lens'])} mse_rows={loss_dict['mse'].shape} "
+                      f"mapped={count}", flush=True)
+            for group, vals in batch_groups.items():
+                acc = window["groups"].setdefault(group, {"mse": [0.0, 0], "ce": [0.0, 0], "samples": 0})
+                acc["samples"] += vals.pop("samples")
+                for key, (total, count) in vals.items():
+                    acc[key][0] += total
+                    acc[key][1] += count
 
         (loss / args.gradient_accumulation_steps).backward()
         window["loss"].append(float(loss))
@@ -362,14 +405,26 @@ def main():
                 return sum(xs) / len(xs) if xs else math.nan
 
             elapsed = time() - t_log
+            per_group = {
+                g: {k: acc[k][0] / acc[k][1] for k in ("mse", "ce") if acc[k][1]} | {"samples": acc["samples"]}
+                for g, acc in sorted(window["groups"].items())
+            }
+            group_text = " ".join(
+                f"{k}[{g}]={v[k]:.4f}" for g, v in per_group.items() for k in ("mse", "ce") if k in v
+            )
             print(
                 f"[finetune] step {step:5d}/{args.total_steps} loss={mean(window['loss']):.4f} "
-                f"ce={mean(window['ce']):.4f} mse={mean(window['mse']):.4f} grad_norm={float(grad_norm):.3f} "
-                f"lr={scheduler.get_last_lr()[0]:.2e} tok/s={window['tokens'] / elapsed:.0f} "
-                f"peak_mem={torch.cuda.max_memory_allocated() / 2**30:.1f}GiB",
+                f"ce={mean(window['ce']):.4f} mse={mean(window['mse']):.4f} {group_text} "
+                f"grad_norm={float(grad_norm):.3f} lr={scheduler.get_last_lr()[0]:.2e} "
+                f"tok/s={window['tokens'] / elapsed:.0f} peak_mem={torch.cuda.max_memory_allocated() / 2**30:.1f}GiB",
                 flush=True,
             )
-            window = {"loss": [], "ce": [], "mse": [], "tokens": 0}
+            with open(log_path, "a") as f:
+                f.write(json.dumps({"step": step, "loss": mean(window["loss"]), "ce": mean(window["ce"]),
+                                    "mse": mean(window["mse"]), "per_group": per_group,
+                                    "grad_norm": float(grad_norm), "lr": scheduler.get_last_lr()[0],
+                                    "tok_per_s": window["tokens"] / elapsed}) + "\n")
+            window = {"loss": [], "ce": [], "mse": [], "tokens": 0, "groups": {}}
             t_log = time()
 
         if step % args.save_every == 0 and step < args.total_steps:

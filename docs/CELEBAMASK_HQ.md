@@ -129,3 +129,42 @@ python tools/evaluation/segment/visualize_celebamask.py --pred_dir results/celeb
 
 `evaluate_celebamask.py --save_gt_dir DIR` also writes the rebuilt ground-truth
 label maps, so the IoU can be recomputed with other tools.
+
+## Fine-tuning: photo → palette and mask → photo (one run, 50/50)
+
+`data/configs/celebamask_hq/celebamask_img2palette_seg2img.yaml` trains two modes of
+`CelebAMaskMultiTaskDataset` (`data/celebamask.py`) in a single LoRA run. Each sample draws its mode
+independently with equal weight from the 24,183 train-split images; val/test stay held out.
+
+| Mode | Input → target | Prompt (`data/celebamask.py`) |
+| --- | --- | --- |
+| `img2palette` | face photo → official-palette segmentation map | `IMG2PALETTE_PROMPT`, starts "Task: face photo to segmentation map." |
+| `seg2img` | official-palette segmentation map → face photo | `SEG2IMG_PROMPT`, starts "Task: segmentation map to face photo." |
+
+```bash
+docker exec sensenova-vision bash scripts/finetune_lora.sh \
+  data/configs/celebamask_hq/celebamask_img2palette_seg2img.yaml \
+  --output_dir results/celebamask_lora_i2p_s2i --total_steps 6000 --save_every 500
+```
+
+On an RTX 5090 (QLoRA NF4, rank 16): ~3.4 s per step of 2 samples, ~2,100 tokens/s, 15.1 GiB peak;
+one pass over the train split is ~12k steps. The log reports the image loss per mode
+(`mse[img2palette]=… mse[seg2img]=…`) and `train_log.jsonl` in the output directory keeps it per
+logging step.
+
+### Evaluating a checkpoint
+
+```bash
+# both modes; the adapter is applied in place (no merged copy needed); "base" evaluates the base model
+docker exec sensenova-vision bash scripts/eval_celebamask_modes.sh \
+  results/celebamask_lora_i2p_s2i/checkpoint-003000 results/celebamask_eval/step3000 --limit 500
+```
+
+| Script | Measures |
+| --- | --- |
+| `inference/benchmark/eval_celebamask_img2palette.py` | photo → palette on the split: outputs snapped to the palette, IoU/F1 per class with `evaluate_celebamask.py`, share of off-palette pixels |
+| `inference/benchmark/eval_celebamask_seg2img.py` | mask → photo: face rate, round-trip layout (the faces re-segmented with the same checkpoint's `img2palette` mode, non-faces scored as background, ratio to the same segmenter on the real photos), FID/KID (clean-fid) against the real photos of the same images, `sheet.jpg` |
+
+Both resume where they stopped. FID is biased below ~2k images, so compare checkpoints at the same
+`--limit` (KID is the better small-sample number); the round trip shares weights between generator
+and judge, so treat it as a consistency check alongside FID.

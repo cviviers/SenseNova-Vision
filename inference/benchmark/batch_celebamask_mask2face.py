@@ -93,6 +93,13 @@ PROMPTS = {
         "clothing. Add natural skin texture, individual hair strands, detailed eyes and soft studio lighting, like "
         "an authentic CelebA portrait photo."
     ),
+    "sketch_colour": (
+        "Turn this flat colour-block painting of a face into a realistic photograph of a real person. Keep the "
+        "exact position, size and outline of the head, hair, face, eyes, eyebrows, nose, lips, ears, neck and "
+        "clothing, and keep the skin tone, hair colour, lip colour, clothing colour and background colour of the "
+        "painting. Add natural skin texture, individual hair strands, detailed eyes and soft studio lighting, like "
+        "an authentic CelebA portrait photo."
+    ),
     "convert": (
         "Convert this face segmentation map into a realistic photograph of a real person. Keep the same face "
         "shape, pose and the position of the hair, eyes, eyebrows, nose, lips, ears and neck, but replace every "
@@ -138,11 +145,73 @@ NATURAL_COLOURS = np.array([
 ], dtype=np.uint8)
 
 
-def render_input(label, style):
-    """Image given to the model: the CelebAMask-HQ palette mask, or a softened naturalistic colour-block sketch."""
+# Appearance pools for randomized sketches (RGB). Diversity comes from these draws, not from the prompt.
+SKIN_TONES = [[255, 224, 196], [241, 194, 167], [229, 178, 145], [214, 160, 124], [198, 134, 104],
+              [176, 116, 88], [150, 98, 72], [120, 78, 58], [92, 60, 45]]
+HAIR_COLOURS = [([28, 24, 24], 3), ([55, 38, 30], 4), ([92, 64, 44], 4), ([135, 100, 68], 3), ([196, 160, 104], 3),
+                ([226, 206, 168], 1), ([128, 58, 34], 1), ([166, 78, 42], 1), ([140, 138, 136], 1),
+                ([196, 194, 190], 0.5)]
+IRIS_COLOURS = [[78, 52, 36], [46, 34, 28], [112, 88, 52], [84, 116, 156], [86, 116, 84], [116, 122, 128]]
+LIPSTICKS = [[168, 38, 58], [196, 88, 108], [138, 48, 58], [186, 106, 104], [120, 40, 70]]
+METALS = [[212, 175, 55], [198, 198, 204], [184, 115, 51]]
+
+
+def _hsv(h, s, v):
+    import colorsys
+    return [int(255 * c) for c in colorsys.hsv_to_rgb(h, s, v)]
+
+
+def random_natural_colours(rng):
+    """One plausible appearance: a colour per class, drawn from the pools above with small jitter."""
+    jit = lambda c, a=8: np.clip(np.array(c, float) + [rng.uniform(-a, a) for _ in range(3)], 0, 255)
+    far = lambda a, b, d=45: np.abs(np.asarray(a, float) - np.asarray(b, float)).sum() >= d
+    skin = jit(rng.choice(SKIN_TONES), 10)
+    # Keep the main boundaries visible: redraw hair / background colours that nearly match the skin or each other.
+    for _ in range(20):
+        hair = jit(rng.choices([c for c, _ in HAIR_COLOURS], weights=[w for _, w in HAIR_COLOURS])[0], 10)
+        if far(hair, skin, 90):
+            break
+    iris = np.array(rng.choice(IRIS_COLOURS), float)
+    lips = (skin * 0.62 + np.array([170, 70, 80]) * 0.38) if rng.random() > 0.3 else jit(rng.choice(LIPSTICKS))
+    c = np.zeros((19, 3))
+    for _ in range(20):
+        c[0] = _hsv(rng.random(), rng.uniform(0, 0.3), rng.uniform(0.25, 0.9))   # background
+        if far(c[0], skin, 90) and far(c[0], hair, 60):
+            break
+    c[1], c[2] = skin, skin * 0.94                                                # skin, nose
+    c[3] = jit([40, 40, 45]) if rng.random() < 0.7 else jit([150, 120, 80])       # eyeglasses
+    c[4] = c[5] = iris * 0.7 + np.array([235, 230, 225]) * 0.3                    # eyes
+    c[6] = c[7] = hair * 0.8 if hair.mean() > 60 else hair * 1.1                  # eyebrows
+    c[8] = c[9] = skin * 0.95                                                     # ears
+    c[10] = [100, 40, 45]                                                         # inner mouth
+    c[11], c[12] = lips * 0.92, lips                                              # upper, lower lip
+    c[13] = hair
+    c[14] = _hsv(rng.random(), rng.uniform(0.1, 0.7), rng.uniform(0.15, 0.85))    # hat
+    c[15] = c[16] = jit(rng.choice(METALS))                                       # earring, necklace
+    c[17] = skin * 0.88                                                           # neck
+    c[18] = _hsv(rng.random(), rng.uniform(0.1, 0.7), rng.uniform(0.15, 0.85))    # clothes
+    return np.clip(c, 0, 255).astype(np.uint8)
+
+
+def render_input(label, style, rng=None):
+    """Image given to the model.
+
+    palette         CelebAMask-HQ colour-coded mask
+    natural         fixed naturalistic colour per class, softened edges
+    natural_random  naturalistic colours drawn per call from SKIN_TONES / HAIR_COLOURS / ... plus a mild
+                    directional lighting gradient (needs rng); the source of appearance diversity
+    """
     if style == "palette":
         return Image.fromarray(PALETTE[label])
-    return Image.fromarray(NATURAL_COLOURS[label]).filter(ImageFilter.GaussianBlur(2))
+    if style == "natural":
+        return Image.fromarray(NATURAL_COLOURS[label]).filter(ImageFilter.GaussianBlur(2))
+    if style != "natural_random":
+        raise ValueError(f"unknown input style {style!r}")
+    img = random_natural_colours(rng)[label].astype(float)
+    angle = rng.uniform(0, 2 * np.pi)
+    yy, xx = np.mgrid[0:label.shape[0], 0:label.shape[1]] / label.shape[0] - 0.5
+    img *= (1 + rng.uniform(0.03, 0.12) * 2 * (np.cos(angle) * xx + np.sin(angle) * yy))[..., None]
+    return Image.fromarray(np.clip(img, 0, 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(2))
 
 
 # Dynamic presets: a fixed base followed by the names of the regions present in that image's map.

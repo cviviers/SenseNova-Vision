@@ -717,6 +717,9 @@ class Bagel(PreTrainedModel):
         cfg_renorm_min: float = 0.0,
         cfg_renorm_type: str = "global",
         cfg_interval: Optional[Tuple[float, float]] = [0, 1],
+        # Optional separate window for image guidance (e.g. only the early, layout-forming steps).
+        # None keeps the original behaviour: image guidance follows cfg_interval.
+        cfg_img_interval: Optional[Tuple[float, float]] = None,
         return_raw_latent=False,
         # cfg_text
         cfg_text_scale: float = 1.0,
@@ -750,6 +753,8 @@ class Bagel(PreTrainedModel):
             else:
                 cfg_text_scale_ = 1.0
                 cfg_img_scale_ = 1.0
+            if cfg_img_interval is not None:
+                cfg_img_scale_ = cfg_img_scale if cfg_img_interval[0] < t <= cfg_img_interval[1] else 1.0
             v_t = self._forward_flow(
                 x_t=x_t,
                 timestep=timestep, 
