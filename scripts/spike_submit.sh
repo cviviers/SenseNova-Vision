@@ -116,6 +116,10 @@ cmd=(
   -e "COMMIT=${commit}"
   -e "SENSENOVA_MODEL_DIR=/data/models/SenseNova-Vision-7B-MoT"
   -e "HF_HOME=/data/hf_cache"
+  # The uid has no /etc/passwd entry in the image; torch.compile needs a user name for its cache dir.
+  -e "USER=developer"
+  -e "TORCHINDUCTOR_CACHE_DIR=/data/cache/torchinductor"
+  -e "TRITON_CACHE_DIR=/data/cache/triton"
   --command -- bash -c "${job_script}" bash "${mode}" "${config}" "$@"
 )
 
