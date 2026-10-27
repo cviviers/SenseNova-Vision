@@ -6,7 +6,7 @@
 celebamask_multitask:
   datasets:
     celebamask_hq:
-      data_dir: /data/datasets/CelebAMask-HQ/CelebAMask-HQ   # Spike: flowmatching PVC mounted at /data
+      data_dir: /data/datasets/segmentation/CelebAMask-HQ   # Spike: archive.zip extracted in the segmentation folder
       num_total_samples: 24183
   split: train
   mode_weights:

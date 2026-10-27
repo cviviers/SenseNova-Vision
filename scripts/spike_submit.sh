@@ -8,7 +8,8 @@
 #
 #   full  scripts/finetune_full.sh (FSDP, all weights); resubmitting the same <run> resumes from its
 #         latest checkpoint
-#   lora  scripts/finetune_lora.sh (single GPU, no resume)
+#   lora  scripts/finetune_lora.sh (single GPU, no resume); BF16 base and 32k-token batches sized for a
+#         B200, override with e.g. --expected_num_tokens 16384 --max_num_tokens 20480
 #   tiny  smoke test: full recipe on a 2-layer model built from the release (tools/make_tiny_model.py)
 #
 # Commit and push first: the job only sees what is on GitHub. Outputs go to /data/runs/<run>.
@@ -78,16 +79,27 @@ export SENSENOVA_RUN_DIR="/data/runs/${RUN}"
 mkdir -p "${SENSENOVA_RUN_DIR}"
 echo "${COMMIT}" >> "${SENSENOVA_RUN_DIR}/commits.txt"
 
+# Spike presets give 13 CPU cores and ~262 GB RAM per GPU: 8 DataLoader workers per GPU (rank) leaves
+# ~5 cores for the training process, pinning and NCCL. Extra args come last and override these.
+loader_args=(--num_workers 8 --prefetch_factor 4)
+
 case "${mode}" in
   full)
-    exec bash scripts/finetune_full.sh "${config}" "$@" ;;
+    exec bash scripts/finetune_full.sh "${config}" "${loader_args[@]}" "$@" ;;
   lora)
-    exec bash scripts/finetune_lora.sh "${config}" --output_dir "${SENSENOVA_RUN_DIR}" "$@" ;;
+    # B200 (192 GB) defaults: BF16 base and ~5x the RTX 5090 token budget (same packing as the full
+    # fine-tune per GPU).
+    exec bash scripts/finetune_lora.sh "${config}" --output_dir "${SENSENOVA_RUN_DIR}" \
+      --quant bf16 \
+      --expected_num_tokens 32768 --max_num_tokens 36864 \
+      --max_num_tokens_per_sample 16384 --prefer_buffer_before 15360 \
+      --use_flex True \
+      "${loader_args[@]}" "$@" ;;
   tiny)
     [ -f "${SENSENOVA_RUN_DIR}/tiny_model/config.json" ] || \
       python tools/make_tiny_model.py "${SENSENOVA_RUN_DIR}/tiny_model"
     SENSENOVA_MODEL_DIR="${SENSENOVA_RUN_DIR}/tiny_model" SENSENOVA_RUN_DIR="${SENSENOVA_RUN_DIR}/run" \
-      exec bash scripts/finetune_full.sh "${config}" --total_steps 12 "$@" ;;
+      exec bash scripts/finetune_full.sh "${config}" --total_steps 12 "${loader_args[@]}" "$@" ;;
 esac
 '
 
