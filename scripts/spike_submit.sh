@@ -5,12 +5,15 @@
 # data/configs/spike/ (datasets, weights and outputs on the flowmatching PVC mounted at /data).
 #
 #   bash scripts/spike_submit.sh <run> <full|lora|tiny> <config.yaml> [extra trainer args]
+#   bash scripts/spike_submit.sh <run> eval <celebamask|cocostuff> [extra eval args, e.g. --limit 500]
 #
 #   full  scripts/finetune_full.sh (FSDP, all weights); resubmitting the same <run> resumes from its
 #         latest checkpoint
 #   lora  scripts/finetune_lora.sh (single GPU, no resume); BF16 base and 32k-token batches sized for a
 #         B200, override with e.g. --expected_num_tokens 16384 --max_num_tokens 20480
 #   tiny  smoke test: full recipe on a 2-layer model built from the release (tools/make_tiny_model.py)
+#   eval  scripts/eval_zero_shot.sh on the released model (img2palette, img2binseg, seg2img; resumes);
+#         EVAL_TASKS and SEG2IMG_ARGS are passed through when set
 #
 # Commit and push first: the job only sees what is on GitHub. Outputs go to /data/runs/<run>.
 #
@@ -25,16 +28,22 @@
 set -euo pipefail
 
 run="${1:?run name (lowercase letters, digits and dashes)}"
-mode="${2:?mode: full, lora or tiny}"
-config="${3:?dataset config yaml, e.g. data/configs/spike/cocostuff_img2palette_seg2img.yaml}"
+mode="${2:?mode: full, lora, tiny or eval}"
+config="${3:?dataset config yaml (eval: celebamask or cocostuff)}"
 shift 3
 
 [[ "${run}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || { >&2 echo "Error: run name must match [a-z0-9-]"; exit 1; }
 case "${mode}" in
   full) default_compute=eight-gpu ;;
-  lora | tiny) default_compute=one-gpu ;;
-  *) >&2 echo "Error: mode must be full, lora or tiny"; exit 1 ;;
+  lora | tiny | eval) default_compute=one-gpu ;;
+  *) >&2 echo "Error: mode must be full, lora, tiny or eval"; exit 1 ;;
 esac
+if [ "${mode}" = eval ]; then
+  [[ "${config}" =~ ^(celebamask|cocostuff)$ ]] || { >&2 echo "Error: eval takes celebamask or cocostuff"; exit 1; }
+  config_file=scripts/eval_zero_shot.sh
+else
+  config_file="${config}"
+fi
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 repo_url="https://github.com/cviviers/SenseNova-Vision"
@@ -46,7 +55,7 @@ uid="${SPIKE_UID:-20236095}"
 gid="${SPIKE_GID:-20236095}"
 ref="${SPIKE_REF:-$(git -C "${repo_dir}" rev-parse --abbrev-ref HEAD)}"
 
-[ -f "${repo_dir}/${config}" ] || { >&2 echo "Error: ${config} not found in ${repo_dir}"; exit 1; }
+[ -f "${repo_dir}/${config_file}" ] || { >&2 echo "Error: ${config_file} not found in ${repo_dir}"; exit 1; }
 
 # Pin the commit now so retries and resumes of this run use the same code.
 if [[ "${ref}" =~ ^[0-9a-f]{40}$ ]]; then
@@ -58,8 +67,8 @@ fi
 if [ "$(git -C "${repo_dir}" rev-parse HEAD)" != "${commit}" ]; then
   >&2 echo "Warning: local HEAD differs from ${ref} on GitHub (${commit:0:8}); the job runs the GitHub version."
 fi
-if ! git -C "${repo_dir}" cat-file -e "${commit}:${config}" 2>/dev/null; then
-  >&2 echo "Warning: ${config} is not in commit ${commit:0:8} as far as the local clone knows; push it first."
+if ! git -C "${repo_dir}" cat-file -e "${commit}:${config_file}" 2>/dev/null; then
+  >&2 echo "Warning: ${config_file} is not in commit ${commit:0:8} as far as the local clone knows; push it first."
 fi
 
 # Runs inside the container; $1 = mode, $2 = config, rest = extra trainer args.
@@ -89,7 +98,7 @@ lora_args=(
   --quant bf16
   --expected_num_tokens 32768 --max_num_tokens 36864
   --max_num_tokens_per_sample 16384 --prefer_buffer_before 15360
-  --use_flex True
+  --use_flex False   # flex attention backward fails to compile on B200 (sm_100) with torch 2.8 / Triton 3.4
 )
 
 # No backslash line continuations in this script: Run:ai stores the command as one string and drops
@@ -105,8 +114,14 @@ case "${mode}" in
     fi
     export SENSENOVA_MODEL_DIR="${SENSENOVA_RUN_DIR}/tiny_model" SENSENOVA_RUN_DIR="${SENSENOVA_RUN_DIR}/run"
     exec bash scripts/finetune_full.sh "${config}" --total_steps 12 "${loader_args[@]}" "$@" ;;
+  eval)
+    exec bash scripts/eval_zero_shot.sh "${config}" "${SENSENOVA_RUN_DIR}" "$@" ;;
 esac
 '
+
+eval_env=()
+[ -n "${EVAL_TASKS:-}" ] && eval_env+=(-e "EVAL_TASKS=${EVAL_TASKS}")
+[ -n "${SEG2IMG_ARGS:-}" ] && eval_env+=(-e "SEG2IMG_ARGS=${SEG2IMG_ARGS}")
 
 cmd=(
   runai training standard submit "${run}" -p "${project}"
@@ -125,6 +140,11 @@ cmd=(
   -e "USER=developer"
   -e "TORCHINDUCTOR_CACHE_DIR=/data/cache/torchinductor"
   -e "TRITON_CACHE_DIR=/data/cache/triton"
+  # Evaluation: Spike dataset roots, and the whole model on one B200 (no CPU offload).
+  -e "CELEBAMASK_HQ_ROOT=/data/datasets/segmentation/CelebAMask-HQ"
+  -e "COCOSTUFF_ROOT=/data/datasets/segmentation"
+  -e "SENSENOVA_MAX_MEM_PER_GPU=160GiB"
+  "${eval_env[@]}"
   --command -- bash -c "${job_script}" bash "${mode}" "${config}" "$@"
 )
 
