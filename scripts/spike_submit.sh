@@ -6,14 +6,16 @@
 #
 #   bash scripts/spike_submit.sh <run> <full|lora|tiny> <config.yaml> [extra trainer args]
 #   bash scripts/spike_submit.sh <run> eval <celebamask|cocostuff> [extra eval args, e.g. --limit 500]
+#       zero-shot: no extra model args; LoRA: --adapter /data/runs/<lora run>/final;
+#       full fine-tune: --model_path /data/runs/<run>/export_<step>
 #
 #   full  scripts/finetune_full.sh (FSDP, all weights); resubmitting the same <run> resumes from its
 #         latest checkpoint
 #   lora  scripts/finetune_lora.sh (single GPU, no resume); BF16 base and 32k-token batches sized for a
 #         B200, override with e.g. --expected_num_tokens 16384 --max_num_tokens 20480
 #   tiny  smoke test: full recipe on a 2-layer model built from the release (tools/make_tiny_model.py)
-#   eval  scripts/eval_zero_shot.sh on the released model (img2palette, img2binseg, seg2img; resumes);
-#         EVAL_TASKS and SEG2IMG_ARGS are passed through when set
+#   eval  scripts/eval_seg_tasks.sh (img2palette, img2binseg, seg2img; resumes; seg2img uses every GPU);
+#         EVAL_TASKS, SEG2IMG_ARGS and BINSEG_PROMPT are passed through when set
 #
 # Commit and push first: the job only sees what is on GitHub. Outputs go to /data/runs/<run>.
 #
@@ -40,7 +42,7 @@ case "${mode}" in
 esac
 if [ "${mode}" = eval ]; then
   [[ "${config}" =~ ^(celebamask|cocostuff)$ ]] || { >&2 echo "Error: eval takes celebamask or cocostuff"; exit 1; }
-  config_file=scripts/eval_zero_shot.sh
+  config_file=scripts/eval_seg_tasks.sh
 else
   config_file="${config}"
 fi
@@ -115,13 +117,14 @@ case "${mode}" in
     export SENSENOVA_MODEL_DIR="${SENSENOVA_RUN_DIR}/tiny_model" SENSENOVA_RUN_DIR="${SENSENOVA_RUN_DIR}/run"
     exec bash scripts/finetune_full.sh "${config}" --total_steps 12 "${loader_args[@]}" "$@" ;;
   eval)
-    exec bash scripts/eval_zero_shot.sh "${config}" "${SENSENOVA_RUN_DIR}" "$@" ;;
+    exec bash scripts/eval_seg_tasks.sh "${config}" "${SENSENOVA_RUN_DIR}" "$@" ;;
 esac
 '
 
 eval_env=()
 [ -n "${EVAL_TASKS:-}" ] && eval_env+=(-e "EVAL_TASKS=${EVAL_TASKS}")
 [ -n "${SEG2IMG_ARGS:-}" ] && eval_env+=(-e "SEG2IMG_ARGS=${SEG2IMG_ARGS}")
+[ -n "${BINSEG_PROMPT:-}" ] && eval_env+=(-e "BINSEG_PROMPT=${BINSEG_PROMPT}")
 
 cmd=(
   runai training standard submit "${run}" -p "${project}"

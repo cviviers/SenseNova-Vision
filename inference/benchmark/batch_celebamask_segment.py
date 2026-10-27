@@ -43,6 +43,7 @@ GPUs or machines with --num_shards / --shard_id.
 """
 
 import argparse
+import functools
 import json
 import os
 import time
@@ -153,15 +154,17 @@ def load_masks(path):
     return {int(cid): unpacked[i] for i, cid in enumerate(data["class_ids"])}, size
 
 
-def segment_binary(model, image, classes, params, seed, size, gate_classes=()):
+def segment_binary(model, image, classes, params, seed, size, gate_classes=(), prompt_fn=None):
+    """prompt_fn(class_id) -> prompt; default: the released model's referring format (binary_prompt)."""
     masks, presence = {}, {}
     for class_id, suffix, phrase in classes:
         if suffix in gate_classes:
             presence[suffix] = ask_presence(model, image, suffix)
             if not presence[suffix]:
                 continue
+        prompt = prompt_fn(class_id) if prompt_fn else binary_prompt(phrase)
         mask = model.generate(
-            contents=[{"type": "image", "value": image}, {"type": "text", "value": binary_prompt(phrase)}],
+            contents=[{"type": "image", "value": image}, {"type": "text", "value": prompt}],
             mode="dense_perception",
             noise_seed=seed,
             **params,
@@ -249,7 +252,13 @@ def main():
     parser.add_argument("--output_dir", default="results/celebamask_hq/val_binary")
     parser.add_argument("--model_path", default=os.environ.get("MODEL_PATH", "sensenova/SenseNova-Vision-7B-MoT"))
     parser.add_argument("--dtype", default=os.environ.get("SENSENOVA_DTYPE", "bf16"))
+    parser.add_argument("--adapter", default=None,
+                        help="LoRA checkpoint dir from train/finetune_lora.py, applied in place (needs --dtype bf16 "
+                             "and the whole model on the GPU); omit for the released model.")
     parser.add_argument("--method", default="binary", choices=["binary", "generic", "palette"])
+    parser.add_argument("--prompt", default="native", choices=["native", "training"],
+                        help="Binary method: native = the released model's referring format (<p>left eye</p>); "
+                             "training = the img2binseg prompt of the fine-tuning data (data/celebamask.py).")
     parser.add_argument("--classes", default=None,
                         help="Comma-separated annotation names to segment (e.g. hair,skin,l_eye). Default: all 18.")
     parser.add_argument("--gate_classes", default=",".join(PRESENCE_QUESTIONS),
@@ -310,6 +319,9 @@ def main():
         return
 
     model = SenseNovaVisionModel(model_path=args.model_path, dtype=args.dtype)
+    if args.adapter:
+        from inference.benchmark.seg_eval_common import apply_lora_inplace
+        apply_lora_inplace(model.model, args.adapter)
     mode = "caption_generate" if args.method == "generic" else "dense_perception"
     params = dict(BASE_PARAMS[mode])
     if args.num_timesteps:
@@ -317,6 +329,9 @@ def main():
     if args.cfg_text_scale is not None:
         params["cfg_text_scale"] = args.cfg_text_scale
     segment = {"binary": segment_binary, "generic": segment_generic, "palette": segment_palette}[args.method]
+    if args.method == "binary" and args.prompt == "training":
+        from data.celebamask import binary_prompt as training_binary_prompt
+        segment = functools.partial(segment_binary, prompt_fn=training_binary_prompt)
 
     log_path = os.path.join(args.output_dir, f"log_shard{args.shard_id}.jsonl")
     start = time.time()

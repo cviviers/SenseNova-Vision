@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
 # Copyright 2026 SenseTime Group Inc. and/or its affiliates.
-# Zero-shot evaluation of the released model (no adapter) on the three segmentation tasks of the fine-tuning
-# configs, as the baseline for the LoRA / full fine-tuned checkpoints (scripts/eval_seg_modes.sh).
+# Evaluate a checkpoint on the three segmentation tasks of the fine-tuning configs: the released model
+# (zero-shot baseline), a LoRA adapter (--adapter <dir>) or an exported full fine-tune (--model_path <dir>).
 #
-#   bash scripts/eval_zero_shot.sh <celebamask|cocostuff> <output_dir> [--limit N] [...]
+#   bash scripts/eval_seg_tasks.sh <celebamask|cocostuff> <output_dir> [--limit N] [--adapter DIR] [...]
 #
 #   img2palette  photo -> palette map with the training prompt, mIoU   -> <output_dir>/img2palette/metrics.json
 #   img2binseg   photo -> one binary mask per class (celebamask only;
 #                inference/benchmark/batch_celebamask_segment.py), mIoU -> <output_dir>/img2binseg/metrics.json
 #   seg2img      palette map -> photo, photo rate / layout / FID / KID  -> <output_dir>/seg2img/metrics.json
 #
-# Extra arguments go to every task (--split --limit --num_timesteps --cfg_text_scale --seed); seg2img-only
-# flags (--seeds N, --num_samples N, --check_seeds K, --no_fid, --no_roundtrip, --no_photo_check) go in
-# SEG2IMG_ARGS. All tasks resume. seg2img is sharded over all visible GPUs. FID-50k on CelebAMask-HQ val
-# (2993 maps, ~17 seeds each; photo check and round trip once per map):
+# Extra arguments go to every task (--adapter --model_path --split --limit --num_timesteps --cfg_text_scale
+# --seed); seg2img-only flags (--seeds N, --num_samples N, --check_seeds K, --no_fid, --no_roundtrip,
+# --no_photo_check) go in SEG2IMG_ARGS. All tasks resume. seg2img is sharded over all visible GPUs.
+# FID-50k on CelebAMask-HQ val (2993 maps, ~17 seeds each; photo check and round trip once per map):
 #   EVAL_TASKS=seg2img SEG2IMG_ARGS="--num_samples 50000 --check_seeds 1" \
-#     bash scripts/eval_zero_shot.sh celebamask results/zero_shot/celebamask_fid50k
+#     bash scripts/eval_seg_tasks.sh celebamask results/eval/base_celebamask_fid50k
 #
 # Environment (all optional):
 #   EVAL_TASKS                 comma list (default: img2palette,img2binseg,seg2img; cocostuff skips img2binseg)
+#   BINSEG_PROMPT              img2binseg prompt: native (released model's <p>class</p> format, default) or
+#                              training (the img2binseg prompt of the fine-tuning data)
 #   MODEL_PATH                 model dir (default: SENSENOVA_MODEL_DIR, else /models/SenseNova-Vision-7B-MoT)
 #   CELEBAMASK_HQ_ROOT         default /datasets/CelebAMask-HQ/CelebAMask-HQ
 #   COCOSTUFF_ROOT             dir with train2017/val2017 and stuffthingmaps zips (default /datasets/segmentation)
@@ -53,8 +55,8 @@ for task in ${tasks//,/ }; do
         echo "skip img2binseg: only implemented for celebamask"
         continue
       fi
-      python -m inference.benchmark.batch_celebamask_segment --method binary --dataset_root "${root}" \
-        --output_dir "${out}/img2binseg" "$@"
+      python -m inference.benchmark.batch_celebamask_segment --method binary --prompt "${BINSEG_PROMPT:-native}" \
+        --dataset_root "${root}" --output_dir "${out}/img2binseg" "$@"
       python tools/evaluation/segment/evaluate_celebamask.py --dataset_root "${root}" \
         --pred_dir "${out}/img2binseg/pred" ;;
     seg2img)

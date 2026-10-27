@@ -18,7 +18,7 @@ generate a photo with the training prompt in edit mode, and measure
 
 Large FID runs: --num_samples 50000 reuses every map with new noise seeds until 50k photos exist,
 --check_seeds 1 limits the photo check / round trip to one photo per map, and --num_shards/--shard_id
---generate_only split the work over GPUs (scripts/eval_zero_shot.sh does this for all visible GPUs).
+--generate_only split the work over GPUs (scripts/eval_seg_tasks.sh does this for all visible GPUs).
 
 Outputs (resumable per image/seed; shards share the directory):
     gen/<key>_s<seed>.png    generated photos            ref/<key>.png    real photos (training size)
