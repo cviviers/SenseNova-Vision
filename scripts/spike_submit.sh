@@ -137,7 +137,10 @@ cmd=(
   -e "RUN=${run}"
   -e "REPO_URL=${repo_url}"
   -e "COMMIT=${commit}"
+  # Both names: the image sets them to its docker-compose mount (/models/...); training reads
+  # SENSENOVA_MODEL_DIR, the evaluation scripts MODEL_PATH.
   -e "SENSENOVA_MODEL_DIR=/data/models/SenseNova-Vision-7B-MoT"
+  -e "MODEL_PATH=/data/models/SenseNova-Vision-7B-MoT"
   -e "HF_HOME=/data/hf_cache"
   # The uid has no /etc/passwd entry in the image; torch.compile needs a user name for its cache dir.
   -e "USER=developer"
