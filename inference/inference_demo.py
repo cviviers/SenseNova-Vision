@@ -1017,7 +1017,12 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MODEL_PATH,
     )
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--dtype", type=str, default="bf16")
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default=os.environ.get("SENSENOVA_DTYPE", "bf16"),
+        help="bf16, nf4 or int8. Defaults to $SENSENOVA_DTYPE, else bf16.",
+    )
     parser.add_argument("--task", type=str, choices=TASK_ORDER, default="raw_query")
     parser.add_argument(
         "--mode",

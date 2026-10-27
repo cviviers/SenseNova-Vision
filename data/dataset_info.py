@@ -3,6 +3,8 @@
 
 import os
 
+from .celebamask import CelebAMaskMultiTaskDataset
+from .cocostuff import CocoStuffMultiTaskDataset
 from .edit_dataset_jsonl import EditJSONLIterableDataset
 from .recon3d.recon3d_dataset_jsonl import Recon3DJsonLIterableDataset
 from .seg_dataset_jsonl import SegJSONLIterableDataset
@@ -40,9 +42,35 @@ DATASET_REGISTRY = {
     "cv_detection_gui": SftJSONLIterableDataset,
     "recon3d_jsonl_sft": Recon3DJsonLIterableDataset,
     "camera_pose_sft": SftJSONLIterableDataset,
+    "celebamask_multitask": CelebAMaskMultiTaskDataset,
+    "cocostuff_multitask": CocoStuffMultiTaskDataset,
 }
 
+COCOSTUFF_ROOT = os.environ.get("COCOSTUFF_ROOT", os.path.join(DATA_ROOT, "cocostuff"))
+
 DATASET_INFO = {
+    # COCO-Stuff (171 classes), all modes generated at training time (data/cocostuff.py). Zips or directories.
+    "cocostuff_multitask": {
+        "cocostuff_train2017": {
+            "data_dir": {"images": os.path.join(COCOSTUFF_ROOT, "train2017.zip"),
+                         "labels": os.path.join(COCOSTUFF_ROOT, "stuffthingmaps_trainval2017.zip"),
+                         "split": "train2017"},
+            "num_total_samples": 118287,
+        },
+        "cocostuff_val2017": {
+            "data_dir": {"images": os.path.join(COCOSTUFF_ROOT, "val2017.zip"),
+                         "labels": os.path.join(COCOSTUFF_ROOT, "stuffthingmaps_trainval2017.zip"),
+                         "split": "val2017"},
+            "num_total_samples": 5000,
+        },
+    },
+    # CelebAMask-HQ face parsing, all modes generated at training time (data/celebamask.py).
+    "celebamask_multitask": {
+        "celebamask_hq": {
+            "data_dir": os.environ.get("CELEBAMASK_HQ_ROOT", os.path.join(DATA_ROOT, "CelebAMask-HQ")),
+            "num_total_samples": 24183,
+        },
+    },
     "seg_instance_sft": {
         "coconut_b": {
             "data_dir": {
@@ -2499,3 +2527,15 @@ DATASET_INFO = {
         },
     },
 }
+
+
+def register_inline_datasets(dataset_meta):
+    """Let a dataset YAML declare its data inline: a group may carry a ``datasets:`` mapping
+    ({name: {data_dir, jsonl_path, num_total_samples, ...}}) instead of entries in DATASET_INFO. The entries are
+    registered here and the group's ``dataset_names`` default to them. Modifies dataset_meta in place."""
+    for group_name, group_args in dataset_meta.items():
+        inline = group_args.pop("datasets", None)
+        if inline:
+            DATASET_INFO.setdefault(group_name, {}).update(inline)
+            group_args.setdefault("dataset_names", list(inline))
+    return dataset_meta

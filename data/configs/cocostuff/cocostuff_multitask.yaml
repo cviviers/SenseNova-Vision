@@ -1,0 +1,32 @@
+# Copyright 2026 SenseTime Group Inc. and/or its affiliates.
+# COCO-Stuff (171 classes), all modes generated at training time by CocoStuffMultiTaskDataset
+# (data/cocostuff.py): img2palette, img2palette_partial, img2binseg, seg2img.
+# Images and labels are read straight from the zips (no extraction needed).
+#   bash scripts/finetune_lora.sh data/configs/cocostuff/cocostuff_multitask.yaml --output_dir results/cocostuff_lora
+
+cocostuff_multitask:
+  datasets:
+    cocostuff_train2017:
+      data_dir:   # container paths; COCOSTUFF_ROOT sets the registry default
+        images: /datasets/segmentation/train2017.zip
+        labels: /datasets/segmentation/stuffthingmaps_trainval2017.zip
+        split: train2017
+      num_total_samples: 118287
+  mode_weights:
+    img2palette: 0.2
+    img2palette_partial: 0.3
+    img2binseg: 0.3
+    seg2img: 0.2
+  partial_present_range: [1, 8]   # classes present in the image per partial request
+  partial_absent_max: 2           # plus 0-2 absent distractor classes (all black in the target)
+  binary_present_prob: 0.8        # img2binseg: 80% present classes, 20% absent (all-black target)
+  image_transform_args:           # COCO images are ~640x480 -> e.g. 512x384 (768 latent tokens)
+    image_stride: 16
+    max_image_size: 512
+    min_image_size: 256
+  vit_image_transform_args:
+    image_stride: 14
+    max_image_size: 518
+    min_image_size: 224
+  shuffle_seed: 0
+  weight: 1.0

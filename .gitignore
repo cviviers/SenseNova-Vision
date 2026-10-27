@@ -8,3 +8,4 @@ examples/output/
 jsonl_generate
 output/
 results/
+docker/.env

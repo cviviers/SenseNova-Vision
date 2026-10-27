@@ -251,7 +251,7 @@ class SenseNovaVisionModel:
         checkpoint_name: str = "ema.safetensors",
         dtype: str = "bf16",
         device: str = "auto",
-        max_mem_per_gpu: str = "80GiB",
+        max_mem_per_gpu: Optional[str] = None,
         offload_folder: str = "offload",
         seed: Optional[int] = 42,
         download_revision: str = "main",
@@ -280,7 +280,11 @@ class SenseNovaVisionModel:
             self.torch_dtype = _resolve_torch_dtype(self.dtype)
 
         self.device = self._resolve_device(device)
-        self.max_mem_per_gpu = max_mem_per_gpu
+        # GPUs smaller than the ~30GB BF16 checkpoint (e.g. 32GB RTX 5090) can cap
+        # the per-GPU budget; layers beyond it are placed in CPU RAM.
+        self.max_mem_per_gpu = max_mem_per_gpu or os.environ.get(
+            "SENSENOVA_MAX_MEM_PER_GPU", "80GiB"
+        )
         self.offload_folder = offload_folder
 
         print(f"[SenseNova-Vision] model_path      = {self.model_path}")
@@ -446,11 +450,23 @@ class SenseNovaVisionModel:
             vae_transform,
         )
 
+    def _device_map_dtype(self):
+        if self.dtype == "nf4":
+            from accelerate.utils import CustomDtype
+
+            return CustomDtype.INT4
+        if self.dtype == "int8":
+            return torch.int8
+        # "auto"/"none" (torch_dtype None): accelerate casts loaded weights to the
+        # fp32 meta parameters, so fp32 sizing is the correct estimate there.
+        return self.torch_dtype
+
     def _infer_device_map(self, model):
         cuda_device_ids = self._cuda_device_ids()
 
         if cuda_device_ids:
             max_memory = {i: self.max_mem_per_gpu for i in cuda_device_ids}
+            max_memory["cpu"] = os.environ.get("SENSENOVA_MAX_CPU_MEM", "128GiB")
         else:
             max_memory = {
                 "cpu": "128GiB",
@@ -459,6 +475,8 @@ class SenseNovaVisionModel:
         device_map = infer_auto_device_map(
             model,
             max_memory=max_memory,
+            # The meta model is fp32; size it at the dtype it will be loaded in.
+            dtype=self._device_map_dtype(),
             no_split_module_classes=[
                 "Bagel",
                 "Qwen2MoTDecoderLayer",

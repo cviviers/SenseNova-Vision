@@ -1,0 +1,1893 @@
+{
+ "unlabeled": {
+  "id": 0,
+  "rgb": [
+   0,
+   0,
+   0
+  ]
+ },
+ "classes": [
+  {
+   "id": 1,
+   "name": "person",
+   "phrase": "person",
+   "rgb": [
+    0,
+    119,
+    255
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 2,
+   "name": "bicycle",
+   "phrase": "bicycle",
+   "rgb": [
+    119,
+    255,
+    0
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 3,
+   "name": "car",
+   "phrase": "car",
+   "rgb": [
+    255,
+    0,
+    119
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 4,
+   "name": "motorcycle",
+   "phrase": "motorcycle",
+   "rgb": [
+    136,
+    136,
+    136
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 5,
+   "name": "airplane",
+   "phrase": "airplane",
+   "rgb": [
+    0,
+    255,
+    136
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 6,
+   "name": "bus",
+   "phrase": "bus",
+   "rgb": [
+    136,
+    0,
+    255
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 7,
+   "name": "train",
+   "phrase": "train",
+   "rgb": [
+    255,
+    136,
+    0
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 8,
+   "name": "truck",
+   "phrase": "truck",
+   "rgb": [
+    0,
+    153,
+    17
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 9,
+   "name": "boat",
+   "phrase": "boat",
+   "rgb": [
+    17,
+    0,
+    153
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 10,
+   "name": "traffic light",
+   "phrase": "traffic light",
+   "rgb": [
+    102,
+    238,
+    255
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 11,
+   "name": "fire hydrant",
+   "phrase": "fire hydrant",
+   "rgb": [
+    153,
+    17,
+    0
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 13,
+   "name": "stop sign",
+   "phrase": "stop sign",
+   "rgb": [
+    238,
+    255,
+    102
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 14,
+   "name": "parking meter",
+   "phrase": "parking meter",
+   "rgb": [
+    255,
+    102,
+    238
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 15,
+   "name": "bench",
+   "phrase": "bench",
+   "rgb": [
+    17,
+    119,
+    136
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 16,
+   "name": "bird",
+   "phrase": "bird",
+   "rgb": [
+    119,
+    136,
+    17
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 17,
+   "name": "cat",
+   "phrase": "cat",
+   "rgb": [
+    136,
+    17,
+    119
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 18,
+   "name": "dog",
+   "phrase": "dog",
+   "rgb": [
+    119,
+    119,
+    255
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 19,
+   "name": "horse",
+   "phrase": "horse",
+   "rgb": [
+    119,
+    255,
+    119
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 20,
+   "name": "sheep",
+   "phrase": "sheep",
+   "rgb": [
+    255,
+    119,
+    119
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 21,
+   "name": "cow",
+   "phrase": "cow",
+   "rgb": [
+    0,
+    0,
+    255
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 22,
+   "name": "elephant",
+   "phrase": "elephant",
+   "rgb": [
+    0,
+    221,
+    238
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 23,
+   "name": "bear",
+   "phrase": "bear",
+   "rgb": [
+    0,
+    255,
+    0
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 24,
+   "name": "zebra",
+   "phrase": "zebra",
+   "rgb": [
+    221,
+    238,
+    0
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 25,
+   "name": "giraffe",
+   "phrase": "giraffe",
+   "rgb": [
+    238,
+    0,
+    221
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 27,
+   "name": "backpack",
+   "phrase": "backpack",
+   "rgb": [
+    255,
+    0,
+    0
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 28,
+   "name": "umbrella",
+   "phrase": "umbrella",
+   "rgb": [
+    187,
+    187,
+    221
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 31,
+   "name": "handbag",
+   "phrase": "handbag",
+   "rgb": [
+    51,
+    51,
+    68
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 32,
+   "name": "tie",
+   "phrase": "tie",
+   "rgb": [
+    51,
+    187,
+    85
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 33,
+   "name": "suitcase",
+   "phrase": "suitcase",
+   "rgb": [
+    68,
+    51,
+    221
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 34,
+   "name": "frisbee",
+   "phrase": "frisbee",
+   "rgb": [
+    68,
+    187,
+    187
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 35,
+   "name": "skis",
+   "phrase": "skis",
+   "rgb": [
+    170,
+    68,
+    187
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 36,
+   "name": "snowboard",
+   "phrase": "snowboard",
+   "rgb": [
+    187,
+    85,
+    51
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 37,
+   "name": "sports ball",
+   "phrase": "sports ball",
+   "rgb": [
+    187,
+    187,
+    68
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 38,
+   "name": "kite",
+   "phrase": "kite",
+   "rgb": [
+    255,
+    204,
+    170
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 39,
+   "name": "baseball bat",
+   "phrase": "baseball bat",
+   "rgb": [
+    187,
+    255,
+    170
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 40,
+   "name": "baseball glove",
+   "phrase": "baseball glove",
+   "rgb": [
+    34,
+    85,
+    0
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 41,
+   "name": "skateboard",
+   "phrase": "skateboard",
+   "rgb": [
+    0,
+    68,
+    187
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 42,
+   "name": "surfboard",
+   "phrase": "surfboard",
+   "rgb": [
+    68,
+    187,
+    0
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 43,
+   "name": "tennis racket",
+   "phrase": "tennis racket",
+   "rgb": [
+    85,
+    68,
+    136
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 44,
+   "name": "bottle",
+   "phrase": "bottle",
+   "rgb": [
+    102,
+    0,
+    51
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 46,
+   "name": "wine glass",
+   "phrase": "wine glass",
+   "rgb": [
+    187,
+    0,
+    68
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 47,
+   "name": "cup",
+   "phrase": "cup",
+   "rgb": [
+    204,
+    136,
+    170
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 48,
+   "name": "fork",
+   "phrase": "fork",
+   "rgb": [
+    0,
+    102,
+    68
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 49,
+   "name": "knife",
+   "phrase": "knife",
+   "rgb": [
+    34,
+    255,
+    68
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 50,
+   "name": "spoon",
+   "phrase": "spoon",
+   "rgb": [
+    51,
+    119,
+    204
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 51,
+   "name": "bowl",
+   "phrase": "bowl",
+   "rgb": [
+    51,
+    170,
+    255
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 52,
+   "name": "banana",
+   "phrase": "banana",
+   "rgb": [
+    85,
+    119,
+    85
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 53,
+   "name": "apple",
+   "phrase": "apple",
+   "rgb": [
+    119,
+    204,
+    51
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 54,
+   "name": "sandwich",
+   "phrase": "sandwich",
+   "rgb": [
+    136,
+    204,
+    170
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 55,
+   "name": "orange",
+   "phrase": "orange",
+   "rgb": [
+    170,
+    255,
+    51
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 56,
+   "name": "broccoli",
+   "phrase": "broccoli",
+   "rgb": [
+    187,
+    0,
+    170
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 57,
+   "name": "carrot",
+   "phrase": "carrot",
+   "rgb": [
+    187,
+    51,
+    255
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 58,
+   "name": "hot dog",
+   "phrase": "hot dog",
+   "rgb": [
+    204,
+    51,
+    119
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 59,
+   "name": "pizza",
+   "phrase": "pizza",
+   "rgb": [
+    255,
+    51,
+    51
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 60,
+   "name": "donut",
+   "phrase": "donut",
+   "rgb": [
+    255,
+    51,
+    170
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 61,
+   "name": "cake",
+   "phrase": "cake",
+   "rgb": [
+    0,
+    0,
+    85
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 62,
+   "name": "chair",
+   "phrase": "chair",
+   "rgb": [
+    0,
+    170,
+    187
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 63,
+   "name": "couch",
+   "phrase": "couch",
+   "rgb": [
+    51,
+    255,
+    187
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 64,
+   "name": "potted plant",
+   "phrase": "potted plant",
+   "rgb": [
+    85,
+    0,
+    170
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 65,
+   "name": "bed",
+   "phrase": "bed",
+   "rgb": [
+    102,
+    68,
+    0
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 67,
+   "name": "dining table",
+   "phrase": "dining table",
+   "rgb": [
+    170,
+    187,
+    0
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 70,
+   "name": "toilet",
+   "phrase": "toilet",
+   "rgb": [
+    170,
+    255,
+    238
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 72,
+   "name": "tv",
+   "phrase": "tv",
+   "rgb": [
+    187,
+    119,
+    238
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 73,
+   "name": "laptop",
+   "phrase": "laptop",
+   "rgb": [
+    255,
+    170,
+    68
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 74,
+   "name": "mouse",
+   "phrase": "mouse",
+   "rgb": [
+    255,
+    170,
+    255
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 75,
+   "name": "remote",
+   "phrase": "remote",
+   "rgb": [
+    119,
+    68,
+    68
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 76,
+   "name": "keyboard",
+   "phrase": "keyboard",
+   "rgb": [
+    187,
+    187,
+    136
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 77,
+   "name": "cell phone",
+   "phrase": "cell phone",
+   "rgb": [
+    221,
+    68,
+    0
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 78,
+   "name": "microwave",
+   "phrase": "microwave",
+   "rgb": [
+    0,
+    51,
+    119
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 79,
+   "name": "oven",
+   "phrase": "oven",
+   "rgb": [
+    0,
+    187,
+    119
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 80,
+   "name": "toaster",
+   "phrase": "toaster",
+   "rgb": [
+    0,
+    204,
+    51
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 81,
+   "name": "sink",
+   "phrase": "sink",
+   "rgb": [
+    51,
+    221,
+    136
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 82,
+   "name": "refrigerator",
+   "phrase": "refrigerator",
+   "rgb": [
+    68,
+    0,
+    0
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 84,
+   "name": "book",
+   "phrase": "book",
+   "rgb": [
+    68,
+    0,
+    102
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 85,
+   "name": "clock",
+   "phrase": "clock",
+   "rgb": [
+    68,
+    0,
+    255
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 86,
+   "name": "vase",
+   "phrase": "vase",
+   "rgb": [
+    68,
+    153,
+    136
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 87,
+   "name": "scissors",
+   "phrase": "scissors",
+   "rgb": [
+    119,
+    102,
+    187
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 88,
+   "name": "teddy bear",
+   "phrase": "teddy bear",
+   "rgb": [
+    119,
+    170,
+    221
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 89,
+   "name": "hair drier",
+   "phrase": "hair drier",
+   "rgb": [
+    153,
+    136,
+    68
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 90,
+   "name": "toothbrush",
+   "phrase": "toothbrush",
+   "rgb": [
+    187,
+    119,
+    0
+   ],
+   "kind": "thing"
+  },
+  {
+   "id": 92,
+   "name": "banner",
+   "phrase": "banner",
+   "rgb": [
+    0,
+    51,
+    34
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 93,
+   "name": "blanket",
+   "phrase": "blanket",
+   "rgb": [
+    51,
+    136,
+    34
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 94,
+   "name": "branch",
+   "phrase": "branch",
+   "rgb": [
+    51,
+    238,
+    17
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 95,
+   "name": "bridge",
+   "phrase": "bridge",
+   "rgb": [
+    119,
+    34,
+    204
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 96,
+   "name": "building-other",
+   "phrase": "building (other)",
+   "rgb": [
+    119,
+    187,
+    119
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 97,
+   "name": "bush",
+   "phrase": "bush",
+   "rgb": [
+    119,
+    255,
+    187
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 98,
+   "name": "cabinet",
+   "phrase": "cabinet",
+   "rgb": [
+    153,
+    85,
+    119
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 99,
+   "name": "cage",
+   "phrase": "cage",
+   "rgb": [
+    204,
+    136,
+    102
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 100,
+   "name": "cardboard",
+   "phrase": "cardboard",
+   "rgb": [
+    238,
+    102,
+    68
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 101,
+   "name": "carpet",
+   "phrase": "carpet",
+   "rgb": [
+    238,
+    187,
+    17
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 102,
+   "name": "ceiling-other",
+   "phrase": "ceiling (other)",
+   "rgb": [
+    255,
+    238,
+    51
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 103,
+   "name": "ceiling-tile",
+   "phrase": "ceiling tile",
+   "rgb": [
+    0,
+    17,
+    204
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 104,
+   "name": "cloth",
+   "phrase": "cloth",
+   "rgb": [
+    0,
+    238,
+    187
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 105,
+   "name": "clothes",
+   "phrase": "clothes",
+   "rgb": [
+    17,
+    51,
+    255
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 106,
+   "name": "clouds",
+   "phrase": "clouds",
+   "rgb": [
+    51,
+    102,
+    255
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 107,
+   "name": "counter",
+   "phrase": "counter",
+   "rgb": [
+    51,
+    238,
+    238
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 108,
+   "name": "cupboard",
+   "phrase": "cupboard",
+   "rgb": [
+    102,
+    255,
+    51
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 109,
+   "name": "curtain",
+   "phrase": "curtain",
+   "rgb": [
+    119,
+    51,
+    255
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 110,
+   "name": "desk-stuff",
+   "phrase": "desk (stuff)",
+   "rgb": [
+    170,
+    238,
+    102
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 111,
+   "name": "dirt",
+   "phrase": "dirt",
+   "rgb": [
+    187,
+    0,
+    238
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 112,
+   "name": "door-stuff",
+   "phrase": "door (stuff)",
+   "rgb": [
+    204,
+    0,
+    17
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 113,
+   "name": "fence",
+   "phrase": "fence",
+   "rgb": [
+    238,
+    51,
+    238
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 114,
+   "name": "floor-marble",
+   "phrase": "floor marble",
+   "rgb": [
+    238,
+    187,
+    119
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 115,
+   "name": "floor-other",
+   "phrase": "floor (other)",
+   "rgb": [
+    238,
+    255,
+    187
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 116,
+   "name": "floor-stone",
+   "phrase": "floor stone",
+   "rgb": [
+    255,
+    119,
+    187
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 117,
+   "name": "floor-tile",
+   "phrase": "floor tile",
+   "rgb": [
+    0,
+    119,
+    187
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 118,
+   "name": "floor-wood",
+   "phrase": "floor wood",
+   "rgb": [
+    0,
+    153,
+    68
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 119,
+   "name": "flower",
+   "phrase": "flower",
+   "rgb": [
+    0,
+    170,
+    238
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 120,
+   "name": "fog",
+   "phrase": "fog",
+   "rgb": [
+    0,
+    204,
+    0
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 121,
+   "name": "food-other",
+   "phrase": "food (other)",
+   "rgb": [
+    34,
+    85,
+    102
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 122,
+   "name": "fruit",
+   "phrase": "fruit",
+   "rgb": [
+    51,
+    0,
+    51
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 123,
+   "name": "furniture-other",
+   "phrase": "furniture (other)",
+   "rgb": [
+    51,
+    51,
+    170
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 124,
+   "name": "grass",
+   "phrase": "grass",
+   "rgb": [
+    119,
+    187,
+    0
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 125,
+   "name": "gravel",
+   "phrase": "gravel",
+   "rgb": [
+    136,
+    0,
+    170
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 126,
+   "name": "ground-other",
+   "phrase": "ground (other)",
+   "rgb": [
+    136,
+    221,
+    221
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 127,
+   "name": "hill",
+   "phrase": "hill",
+   "rgb": [
+    153,
+    34,
+    51
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 128,
+   "name": "house",
+   "phrase": "house",
+   "rgb": [
+    153,
+    68,
+    0
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 129,
+   "name": "leaves",
+   "phrase": "leaves",
+   "rgb": [
+    153,
+    136,
+    204
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 130,
+   "name": "light",
+   "phrase": "light",
+   "rgb": [
+    170,
+    238,
+    0
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 131,
+   "name": "mat",
+   "phrase": "mat",
+   "rgb": [
+    187,
+    0,
+    119
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 132,
+   "name": "metal",
+   "phrase": "metal",
+   "rgb": [
+    204,
+    34,
+    204
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 133,
+   "name": "mirror-stuff",
+   "phrase": "mirror (stuff)",
+   "rgb": [
+    204,
+    136,
+    51
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 134,
+   "name": "moss",
+   "phrase": "moss",
+   "rgb": [
+    204,
+    221,
+    255
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 135,
+   "name": "mountain",
+   "phrase": "mountain",
+   "rgb": [
+    221,
+    85,
+    153
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 136,
+   "name": "mud",
+   "phrase": "mud",
+   "rgb": [
+    221,
+    85,
+    204
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 137,
+   "name": "napkin",
+   "phrase": "napkin",
+   "rgb": [
+    238,
+    0,
+    68
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 138,
+   "name": "net",
+   "phrase": "net",
+   "rgb": [
+    238,
+    0,
+    170
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 139,
+   "name": "paper",
+   "phrase": "paper",
+   "rgb": [
+    238,
+    170,
+    204
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 140,
+   "name": "pavement",
+   "phrase": "pavement",
+   "rgb": [
+    255,
+    51,
+    102
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 141,
+   "name": "pillow",
+   "phrase": "pillow",
+   "rgb": [
+    34,
+    34,
+    0
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 142,
+   "name": "plant-other",
+   "phrase": "plant (other)",
+   "rgb": [
+    51,
+    0,
+    204
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 143,
+   "name": "plastic",
+   "phrase": "plastic",
+   "rgb": [
+    68,
+    85,
+    34
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 144,
+   "name": "platform",
+   "phrase": "platform",
+   "rgb": [
+    68,
+    255,
+    102
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 145,
+   "name": "playingfield",
+   "phrase": "playingfield",
+   "rgb": [
+    85,
+    170,
+    51
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 146,
+   "name": "railing",
+   "phrase": "railing",
+   "rgb": [
+    85,
+    255,
+    153
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 147,
+   "name": "railroad",
+   "phrase": "railroad",
+   "rgb": [
+    102,
+    153,
+    170
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 148,
+   "name": "river",
+   "phrase": "river",
+   "rgb": [
+    136,
+    51,
+    153
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 149,
+   "name": "road",
+   "phrase": "road",
+   "rgb": [
+    153,
+    85,
+    238
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 150,
+   "name": "rock",
+   "phrase": "rock",
+   "rgb": [
+    153,
+    153,
+    255
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 151,
+   "name": "roof",
+   "phrase": "roof",
+   "rgb": [
+    238,
+    221,
+    221
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 152,
+   "name": "rug",
+   "phrase": "rug",
+   "rgb": [
+    255,
+    153,
+    153
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 153,
+   "name": "salad",
+   "phrase": "salad",
+   "rgb": [
+    0,
+    102,
+    17
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 154,
+   "name": "sand",
+   "phrase": "sand",
+   "rgb": [
+    0,
+    238,
+    85
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 155,
+   "name": "sea",
+   "phrase": "sea",
+   "rgb": [
+    17,
+    85,
+    221
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 156,
+   "name": "shelf",
+   "phrase": "shelf",
+   "rgb": [
+    17,
+    136,
+    221
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 157,
+   "name": "sky-other",
+   "phrase": "sky (other)",
+   "rgb": [
+    17,
+    204,
+    153
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 158,
+   "name": "skyscraper",
+   "phrase": "skyscraper",
+   "rgb": [
+    17,
+    204,
+    204
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 159,
+   "name": "snow",
+   "phrase": "snow",
+   "rgb": [
+    17,
+    255,
+    221
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 160,
+   "name": "solid-other",
+   "phrase": "solid (other)",
+   "rgb": [
+    34,
+    17,
+    119
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 161,
+   "name": "stairs",
+   "phrase": "stairs",
+   "rgb": [
+    34,
+    17,
+    238
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 162,
+   "name": "stone",
+   "phrase": "stone",
+   "rgb": [
+    34,
+    85,
+    153
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 163,
+   "name": "straw",
+   "phrase": "straw",
+   "rgb": [
+    34,
+    136,
+    85
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 164,
+   "name": "structural-other",
+   "phrase": "structural (other)",
+   "rgb": [
+    34,
+    136,
+    170
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 165,
+   "name": "table",
+   "phrase": "table",
+   "rgb": [
+    34,
+    170,
+    51
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 166,
+   "name": "tent",
+   "phrase": "tent",
+   "rgb": [
+    51,
+    102,
+    68
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 167,
+   "name": "textile-other",
+   "phrase": "textile (other)",
+   "rgb": [
+    68,
+    34,
+    34
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 168,
+   "name": "towel",
+   "phrase": "towel",
+   "rgb": [
+    68,
+    85,
+    187
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 169,
+   "name": "tree",
+   "phrase": "tree",
+   "rgb": [
+    68,
+    102,
+    119
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 170,
+   "name": "vegetable",
+   "phrase": "vegetable",
+   "rgb": [
+    68,
+    119,
+    0
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 171,
+   "name": "wall-brick",
+   "phrase": "wall brick",
+   "rgb": [
+    68,
+    136,
+    238
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 172,
+   "name": "wall-concrete",
+   "phrase": "wall concrete",
+   "rgb": [
+    68,
+    221,
+    51
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 173,
+   "name": "wall-other",
+   "phrase": "wall (other)",
+   "rgb": [
+    85,
+    34,
+    85
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 174,
+   "name": "wall-panel",
+   "phrase": "wall panel",
+   "rgb": [
+    85,
+    85,
+    238
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 175,
+   "name": "wall-stone",
+   "phrase": "wall stone",
+   "rgb": [
+    85,
+    119,
+    153
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 176,
+   "name": "wall-tile",
+   "phrase": "wall tile",
+   "rgb": [
+    85,
+    170,
+    102
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 177,
+   "name": "wall-wood",
+   "phrase": "wall wood",
+   "rgb": [
+    85,
+    187,
+    238
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 178,
+   "name": "water-other",
+   "phrase": "water (other)",
+   "rgb": [
+    85,
+    204,
+    153
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 179,
+   "name": "waterdrops",
+   "phrase": "waterdrops",
+   "rgb": [
+    85,
+    221,
+    204
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 180,
+   "name": "window-blind",
+   "phrase": "window blind",
+   "rgb": [
+    102,
+    0,
+    221
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 181,
+   "name": "window-other",
+   "phrase": "window (other)",
+   "rgb": [
+    102,
+    85,
+    102
+   ],
+   "kind": "stuff"
+  },
+  {
+   "id": 182,
+   "name": "wood",
+   "phrase": "wood",
+   "rgb": [
+    102,
+    102,
+    51
+   ],
+   "kind": "stuff"
+  }
+ ]
+}

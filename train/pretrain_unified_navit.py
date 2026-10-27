@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import functools
+import json
 import os
 import wandb
 import yaml
@@ -27,13 +28,14 @@ from transformers.optimization import (
 )
 
 from data.dataset_base import DataConfig, PackedDataset, collate_wrapper
+from data.dataset_info import register_inline_datasets
 from data.data_utils import add_special_tokens
 from modeling.autoencoder import load_ae
 from modeling.bagel import (
     BagelConfig, Bagel, Qwen2Config, Qwen2ForCausalLM, SiglipVisionConfig, SiglipVisionModel
 )
 from modeling.qwen2 import Qwen2Tokenizer
-from train.train_utils import create_logger, get_latest_ckpt
+from train.train_utils import accumulate_groups, create_logger, get_latest_ckpt, per_group_losses, summarize_groups
 from train.fsdp_utils import (
     FSDPCheckpoint, FSDPConfig, grad_checkpoint_check_fn, fsdp_wrapper, 
     fsdp_ema_setup, fsdp_ema_update,
@@ -608,7 +610,8 @@ def main():
     # Setup packed dataloader
     with open(data_args.dataset_config_file, "r") as stream:
         dataset_meta = yaml.safe_load(stream)
-    
+    register_inline_datasets(dataset_meta)  # groups may declare their data inline under `datasets:`
+
     dataset_config = DataConfig(grouped_datasets=dataset_meta)
     
     if training_args.visual_und:
@@ -662,6 +665,7 @@ def main():
     start_time = time()
     logger.info(f"Training for {training_args.total_steps} steps, starting at {train_step}...")
     trained_tokens = 0
+    group_window = {}  # per-sample-group (dataset mode or name) loss sums on this rank since the last log
     for curr_step, data in enumerate(train_loader, start=train_step):
         data = data.cuda(device).to_dict()
         if training_args.debug:
@@ -690,6 +694,11 @@ def main():
                 loss_dict = fsdp_model(**data)
             except Exception as e:
                 raise e
+
+        # Per-mode losses, from the raw per-token losses before they are reduced below.
+        if data_indexes:
+            groups = [d.get("mode", d.get("dataset_name", "all")) for d in data_indexes]
+            accumulate_groups(group_window, per_group_losses(loss_dict, data, groups))
         
         loss = 0
         ce = loss_dict["ce"]
@@ -779,7 +788,26 @@ def main():
             message += f"Train Steps/Sec: {steps_per_sec:.2f}, "
             message += f"Current Trained Samples: {total_samples}, mse_tokens={total_mse_tokens.item()}, ce_tokens={total_ce_tokens.item()}, "
             message += f"Total Trained Tokens: {trained_tokens}, "
+            # Combine the per-mode sums of all ranks.
+            gathered = [None] * dist.get_world_size()
+            dist.all_gather_object(gathered, group_window)
+            merged = {}
+            for rank_window in gathered:
+                for group, acc in rank_window.items():
+                    accumulate_groups(merged, {group: {"mse": tuple(acc["mse"]), "ce": tuple(acc["ce"]),
+                                                       "samples": acc["samples"]}})
+            per_group = summarize_groups(merged)
+            for group, vals in per_group.items():
+                for key in ("mse", "ce"):
+                    if key in vals:
+                        message += f"{key}[{group}]: {vals[key]:.4f}, "
+                        wandb_log[f"{key}_{group}"] = vals[key]
+            group_window = {}
             logger.info(message)
+            if dist.get_rank() == 0:
+                with open(os.path.join(training_args.results_dir, "train_log.jsonl"), "a") as f:
+                    f.write(json.dumps({"step": curr_step, "loss": {k: float(v) for k, v in wandb_log.items()},
+                                        "per_group": per_group, "lr": optimizer.param_groups[0]["lr"]}) + "\n")
 
             wandb_log['lr'] = optimizer.param_groups[0]['lr']
             wandb_log['total_mse_tokens'] = total_mse_tokens.item()
@@ -806,7 +834,9 @@ def main():
                 data_status[item['dataset_name']] = {}
             data_status[item['dataset_name']][item['worker_id']] = item['data_indexes']
 
-        if (curr_step > 0 and curr_step % training_args.save_every == 0) or curr_step == train_step + 10:
+        # Stop after total_steps batches (the loader is infinite); the last step always writes a checkpoint.
+        is_last_step = curr_step + 1 >= training_args.total_steps
+        if (curr_step > 0 and curr_step % training_args.save_every == 0) or curr_step == train_step + 10 or is_last_step:
             # Clear caches and ensure all CUDA operations complete before checkpoint
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
@@ -839,6 +869,9 @@ def main():
             #     ema_state_dict, 
             #     os.path.join(training_args.checkpoint_dir, f"{curr_step:07d}", "ema_standard.pt")
             # )
+
+        if is_last_step:
+            break
 
     logger.info("Done!")
     if dist.get_rank() == 0:

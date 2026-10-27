@@ -144,7 +144,8 @@ class InterleaveInferencer:
         cfg_interval=(0.4, 1.0),
         cfg_renorm_min=0.0,
         cfg_renorm_type="global",
-        
+        cfg_img_interval=None,
+
         num_timesteps=50, 
         timestep_shift=3.0,
         num_output_vae=1,
@@ -208,6 +209,7 @@ class InterleaveInferencer:
             cfg_text_scale=cfg_text_scale,
             cfg_img_scale=cfg_img_scale,
             cfg_interval=cfg_interval,
+            cfg_img_interval=cfg_img_interval,
             cfg_renorm_min=cfg_renorm_min,
             cfg_renorm_type=cfg_renorm_type,
             timestep_shift=timestep_shift,
@@ -291,6 +293,7 @@ class InterleaveInferencer:
         num_timesteps=50,
         cfg_renorm_min=0.0,
         cfg_renorm_type="global",
+        cfg_img_interval=None,
         image_shapes=(1024, 1024),
         vae_transform=None,
         vit_transform=None,
@@ -368,6 +371,7 @@ class InterleaveInferencer:
                     cfg_text_scale=cfg_text_scale, 
                     cfg_img_scale=cfg_img_scale, 
                     cfg_interval=cfg_interval, 
+                    cfg_img_interval=cfg_img_interval,
                     timestep_shift=timestep_shift, 
                     num_timesteps=num_timesteps,
                     cfg_renorm_min=cfg_renorm_min,

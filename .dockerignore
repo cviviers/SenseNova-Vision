@@ -1,0 +1,9 @@
+.git
+**/__pycache__
+datas
+jsonl_generate
+output
+results
+examples/output
+offload
+docker/.env
