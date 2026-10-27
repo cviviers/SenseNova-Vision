@@ -186,7 +186,7 @@ def main():
     logs = [records[ks] for ks in samples if ks in records]
     if len(logs) < len(samples):
         print(f"[seg2img] WARNING {len(samples) - len(logs)} samples have no log record", flush=True)
-    metrics = {"dataset": ds.name, "num_maps": len(keys), "num_generated": len(logs), "palette_key": args.palette_key,
+    metrics = {"dataset": ds.name, "num_maps": len(keys), "num_generated": len(logs),
                "seconds_per_image": float(np.mean([l["seconds"] for l in logs]))}
     if not args.no_photo_check:
         photo_logs = [l for l in logs if "is_photo" in l]

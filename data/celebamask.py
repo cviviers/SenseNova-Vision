@@ -61,7 +61,8 @@ def colour_key(class_ids=FACE_CLASS_IDS):
 
 # ----------------------------------------------------------------------------- prompts
 # img2palette and seg2img share the colour key, so each starts with an explicit task header that states the
-# direction (input -> output) before anything else.
+# direction (input -> output) before anything else. Colour-key rule (as in data/cocostuff.py): img2palette lists
+# every class (the answer format, not the answer); seg2img lists the classes present in the input map.
 IMG2PALETTE_PROMPT = (
     "Task: face photo to segmentation map. The input is a face photograph. Output its CelebAMask-HQ semantic "
     "face segmentation map, not a photograph. Colour every pixel with exactly one of these colours: "
@@ -80,14 +81,20 @@ BINARY_PROMPT_TEMPLATE = (
     "has no {phrase}, output an all-black mask."
 )
 
-SEG2IMG_PROMPT = (
+SEG2IMG_PROMPT_TEMPLATE = (
     "Task: segmentation map to face photo. The input is a CelebAMask-HQ semantic face segmentation map. Output a "
     "realistic human portrait photograph, not a segmentation map. The colours in the map mean: "
-    f"{colour_key()}; background is black (0, 0, 0). Strictly preserve the position, shape, and "
+    "{key}; background is black (0, 0, 0). Strictly preserve the position, shape, and "
     "boundaries of every region. Generate natural skin texture, realistic hair strands, detailed facial "
     "features, and coherent photographic lighting, like an authentic, unretouched CelebA face photograph. Do "
     "not retain any segmentation colours."
 )
+
+
+def seg2img_prompt(label):
+    """SEG2IMG prompt for one input map: the colour key lists the face classes present in that map."""
+    present = [c for c in FACE_CLASS_IDS if (label == c).any()]
+    return SEG2IMG_PROMPT_TEMPLATE.format(key=colour_key(present) or "no face classes")
 
 
 def partial_prompt(class_ids):
@@ -158,7 +165,7 @@ def sample_task(rng, label, mode, partial_size_range=(1, 17), binary_present_pro
         cid = rng.choice(pool)
         return None, binary_prompt(cid), binary_image(label, cid), {"class": cid, "present": cid in present}
     if mode == "seg2img":
-        return palette_image(label), SEG2IMG_PROMPT, None, {}
+        return palette_image(label), seg2img_prompt(label), None, {"classes": present}
     raise ValueError(f"unknown mode {mode!r}")
 
 

@@ -22,15 +22,16 @@ reserved for unlabeled pixels; `data/configs/cocostuff/cocostuff_classes.json` l
 
 | Mode | Input → target | Prompt |
 | --- | --- | --- |
-| `img2palette` | photo → COCO-Stuff palette map | `IMG2PALETTE_PROMPT`, starts "Task: photo to segmentation map." — fixed, 79 tokens, no colour list |
+| `img2palette` | photo → COCO-Stuff palette map | `IMG2PALETTE_PROMPT`, starts "Task: photo to segmentation map." — fixed, colour key of all 171 classes (2,795 tokens) |
 | `seg2img` | palette map → photo | `seg2img_prompt(map)`, starts "Task: segmentation map to photo." — colour key of the classes present in the input map (median 204 tokens) |
+
+The colour key follows the same rule as CelebAMask-HQ: photo → palette lists every class (the answer
+format, not the answer; the palette is generated here, so no model can know it without the key), and
+mask → photo lists only the classes present in its input map, which are read from the input itself. The
+full key costs ~2,700 extra tokens per photo → palette sample, so COCO-Stuff packs fewer samples per step.
 
 Differences from CelebAMask-HQ, and why:
 
-* **Colour key.** Listing all 171 class colours would make every prompt ~2,800 tokens, about half of
-  each training sequence. Photo → palette therefore uses a short fixed prompt (the palette is a fixed
-  convention learned from the targets; listing the classes present would leak the answer). Mask → photo
-  lists only the classes present in its input map, which are read from the input itself.
 * **Image size.** COCO photos keep their aspect ratio: longest side 512, shortest ≥ 256 (e.g. 512×384).
   Targets are rendered at that exact size, so palette colours are never blended by resizing.
 * **Metric protocol.** Unlabeled ground-truth pixels are ignored; mIoU averages the 171 classes.

@@ -93,20 +93,12 @@ def colour_key(class_ids):
 
 
 # ----------------------------------------------------------------------------- prompts
-# img2palette and seg2img start with an explicit task header that states the direction (input -> output).
-# A full 171-class colour key would cost ~2,800 tokens per sample (about half the sequence), so:
-#   img2palette  no key: the palette is a fixed convention learned from the targets (listing the classes
-#                present would leak the answer, which is unknown at inference);
+# img2palette and seg2img start with an explicit task header that states the direction (input -> output), and
+# follow the same colour-key rule as data/celebamask.py:
+#   img2palette  key for every class: the answer format, not the answer (~2,800 tokens for 171 classes; the
+#                palette is generated here, so a model cannot know it without the key);
 #   seg2img      key for the classes present in the input map only (derivable from the input itself).
 IMG2PALETTE_PROMPT = (
-    "Task: photo to segmentation map. The input is a photograph. Output its COCO-Stuff semantic segmentation "
-    "map, not a photograph: colour every pixel with the fixed COCO-Stuff palette colour of its class (171 "
-    "classes), and colour pixels that belong to none of these classes black (0, 0, 0). Use flat colours only, "
-    "with no shading or texture."
-)
-# Evaluation only (zero-shot baseline): the released model has never seen this palette, so the key for all 171
-# classes is spelled out (~4.6k characters). Fine-tuned models are evaluated with IMG2PALETTE_PROMPT, as trained.
-IMG2PALETTE_FULL_KEY_PROMPT = (
     "Task: photo to segmentation map. The input is a photograph. Output its COCO-Stuff semantic segmentation "
     "map, not a photograph. Colour every pixel with exactly one of these colours: "
     f"{colour_key(USED_IDS)}; pixels that belong to none of these classes are black (0, 0, 0). Use flat "

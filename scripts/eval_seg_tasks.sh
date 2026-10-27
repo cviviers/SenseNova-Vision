@@ -22,8 +22,6 @@
 #   EVAL_TASKS                 comma list (default: img2palette,img2binseg,seg2img; cocostuff skips img2binseg)
 #   BINSEG_PROMPT              img2binseg prompt: native (released model's <p>class</p> format, default) or
 #                              training (the img2binseg prompt of the fine-tuning data)
-#   PALETTE_KEY                img2palette prompt (and seg2img round trip): none (as trained, default) or full
-#                              (colour key for every class; zero-shot COCO-Stuff, whose prompt has no key)
 #   MODEL_PATH                 model dir (default: SENSENOVA_MODEL_DIR, else /models/SenseNova-Vision-7B-MoT)
 #   CELEBAMASK_HQ_ROOT         default /datasets/CelebAMask-HQ/CelebAMask-HQ
 #   COCOSTUFF_ROOT             dir with train2017/val2017 and stuffthingmaps zips (default /datasets/segmentation)
@@ -64,7 +62,7 @@ for task in ${tasks//,/ }; do
   case "${task}" in
     img2palette)
       python -m inference.benchmark.eval_seg_img2palette --dataset "${dataset}" --dataset_root "${root}" \
-        --palette_key "${PALETTE_KEY:-none}" --max_mem_per_gpu "${max_mem}" --output_dir "${out}/img2palette" "$@" ;;
+        --max_mem_per_gpu "${max_mem}" --output_dir "${out}/img2palette" "$@" ;;
     img2binseg)
       if [ "${dataset}" != celebamask ]; then
         echo "skip img2binseg: only implemented for celebamask"
@@ -81,8 +79,7 @@ for task in ${tasks//,/ }; do
         --pred_dir "${out}/img2binseg/pred" ;;
     seg2img)
       seg2img_cmd=(python -m inference.benchmark.eval_seg_seg2img --dataset "${dataset}" --dataset_root "${root}"
-        --palette_key "${PALETTE_KEY:-none}" --max_mem_per_gpu "${max_mem}" --output_dir "${out}/seg2img" "$@"
-        ${SEG2IMG_ARGS:-})
+        --max_mem_per_gpu "${max_mem}" --output_dir "${out}/seg2img" "$@" ${SEG2IMG_ARGS:-})
       if [ "${num_gpus}" -gt 1 ]; then
         # Shards only generate; one final pass computes the metrics from their files.
         run_shards "${seg2img_cmd[@]}" --generate_only

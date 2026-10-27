@@ -22,7 +22,7 @@ the official CelebAMask-HQ colour list and class order (checked at import).
                    group ``general_edit`` (EditJSONLIterableDataset).
 
 Prompts, palette and label loading live in data/celebamask.py (``IMG2PALETTE_PROMPT``,
-``partial_prompt(class_ids)``, ``binary_prompt(class_id)``, ``SEG2IMG_PROMPT``), shared with the
+``partial_prompt(class_ids)``, ``binary_prompt(class_id)``, ``seg2img_prompt(label)``), shared with the
 training-time generator ``CelebAMaskMultiTaskDataset`` that produces all of these on the fly. Convert generated outputs
 back to CelebAMask-HQ label maps / per-part annotation files with
 tools/data_prepare/segmentation/celebamask_convert.py.
@@ -55,7 +55,6 @@ from data.celebamask import (
     FACE_CLASS_IDS,
     IMG2PALETTE_PROMPT,
     PALETTE,
-    SEG2IMG_PROMPT,
     SIZE,
     SPLIT_RANGES,
     binary_image,
@@ -65,6 +64,7 @@ from data.celebamask import (
     load_split_ids,
     palette_image,
     partial_prompt,
+    seg2img_prompt,
 )
 from tools.data_prepare.segmentation.common.prompts import DEFAULT_IMAGE_TOKEN, DEFAULT_SEG_TOKEN
 
@@ -209,7 +209,7 @@ def main():
                     continue
                 records.append(("img2binseg", key, seg_record(image_rel, rel, binary_prompt(cid))))
         if "seg2img" in tasks:
-            records.append(("seg2img", "seg2img", {"image": [palette_rel, image_rel], "instruction": SEG2IMG_PROMPT}))
+            records.append(("seg2img", "seg2img", {"image": [palette_rel, image_rel], "instruction": seg2img_prompt(label)}))
 
         for task, key, rec in records:
             files[task].write(json.dumps(rec, ensure_ascii=False) + "\n")

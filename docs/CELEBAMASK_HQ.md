@@ -138,8 +138,8 @@ independently with equal weight from the 24,183 train-split images; val/test sta
 
 | Mode | Input → target | Prompt (`data/celebamask.py`) |
 | --- | --- | --- |
-| `img2palette` | face photo → official-palette segmentation map | `IMG2PALETTE_PROMPT`, starts "Task: face photo to segmentation map." |
-| `seg2img` | official-palette segmentation map → face photo | `SEG2IMG_PROMPT`, starts "Task: segmentation map to face photo." |
+| `img2palette` | face photo → official-palette segmentation map | `IMG2PALETTE_PROMPT`, starts "Task: face photo to segmentation map." — colour key of all 18 face classes |
+| `seg2img` | official-palette segmentation map → face photo | `seg2img_prompt(map)`, starts "Task: segmentation map to face photo." — colour key of the classes present in the input map |
 
 ```bash
 docker exec sensenova-vision bash scripts/finetune_lora.sh \
