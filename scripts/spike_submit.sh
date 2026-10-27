@@ -93,7 +93,7 @@ echo "${COMMIT}" >> "${SENSENOVA_RUN_DIR}/commits.txt"
 loader_args=(--num_workers 8 --prefetch_factor 4)
 
 # B200 (192 GB) LoRA defaults: BF16 base and ~5x the RTX 5090 token budget (same packing as the full
-# fine-tune per GPU).
+# fine-tune per GPU). Measured on CelebAMask-HQ: 51 GB peak, ~6.6k tok/s (~5 s/step, ~8.6 images/step).
 lora_args=(
   --quant bf16
   --expected_num_tokens 32768 --max_num_tokens 36864

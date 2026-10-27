@@ -11,7 +11,11 @@
 #   seg2img      palette map -> photo, photo rate / layout / FID / KID  -> <output_dir>/seg2img/metrics.json
 #
 # Extra arguments go to every task (--split --limit --num_timesteps --cfg_text_scale --seed); seg2img-only
-# flags (--seeds N, --no_fid, --no_roundtrip, --no_photo_check) go in SEG2IMG_ARGS. All tasks resume.
+# flags (--seeds N, --num_samples N, --check_seeds K, --no_fid, --no_roundtrip, --no_photo_check) go in
+# SEG2IMG_ARGS. All tasks resume. seg2img is sharded over all visible GPUs. FID-50k on CelebAMask-HQ val
+# (2993 maps, ~17 seeds each; photo check and round trip once per map):
+#   EVAL_TASKS=seg2img SEG2IMG_ARGS="--num_samples 50000 --check_seeds 1" \
+#     bash scripts/eval_zero_shot.sh celebamask results/zero_shot/celebamask_fid50k
 #
 # Environment (all optional):
 #   EVAL_TASKS                 comma list (default: img2palette,img2binseg,seg2img; cocostuff skips img2binseg)
@@ -54,8 +58,24 @@ for task in ${tasks//,/ }; do
       python tools/evaluation/segment/evaluate_celebamask.py --dataset_root "${root}" \
         --pred_dir "${out}/img2binseg/pred" ;;
     seg2img)
-      python -m inference.benchmark.eval_seg_seg2img --dataset "${dataset}" --dataset_root "${root}" \
-        --max_mem_per_gpu "${max_mem}" --output_dir "${out}/seg2img" "$@" ${SEG2IMG_ARGS:-} ;;
+      seg2img_cmd=(python -m inference.benchmark.eval_seg_seg2img --dataset "${dataset}" --dataset_root "${root}"
+        --max_mem_per_gpu "${max_mem}" --output_dir "${out}/seg2img" "$@" ${SEG2IMG_ARGS:-})
+      num_gpus="$(nvidia-smi -L | wc -l)"
+      if [ "${num_gpus}" -gt 1 ]; then
+        # One shard per GPU writing into the same directory, then one pass that only computes the metrics.
+        pids=()
+        for ((i = 0; i < num_gpus; i++)); do
+          CUDA_VISIBLE_DEVICES="${i}" "${seg2img_cmd[@]}" --num_shards "${num_gpus}" --shard_id "${i}" \
+            --generate_only > >(sed "s/^/[gpu${i}] /") 2>&1 &
+          pids+=("$!")
+        done
+        failed=0
+        for pid in "${pids[@]}"; do wait "${pid}" || failed=1; done
+        [ "${failed}" = 0 ] || { >&2 echo "Error: a seg2img shard failed"; exit 1; }
+        CUDA_VISIBLE_DEVICES=0 "${seg2img_cmd[@]}"
+      else
+        "${seg2img_cmd[@]}"
+      fi ;;
     *)
       >&2 echo "Error: unknown task ${task}"; exit 1 ;;
   esac
