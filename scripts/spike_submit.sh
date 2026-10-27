@@ -83,23 +83,28 @@ echo "${COMMIT}" >> "${SENSENOVA_RUN_DIR}/commits.txt"
 # ~5 cores for the training process, pinning and NCCL. Extra args come last and override these.
 loader_args=(--num_workers 8 --prefetch_factor 4)
 
+# B200 (192 GB) LoRA defaults: BF16 base and ~5x the RTX 5090 token budget (same packing as the full
+# fine-tune per GPU).
+lora_args=(
+  --quant bf16
+  --expected_num_tokens 32768 --max_num_tokens 36864
+  --max_num_tokens_per_sample 16384 --prefer_buffer_before 15360
+  --use_flex True
+)
+
+# No backslash line continuations in this script: Run:ai stores the command as one string and drops
+# them, which silently cuts a command off at the line break.
 case "${mode}" in
   full)
     exec bash scripts/finetune_full.sh "${config}" "${loader_args[@]}" "$@" ;;
   lora)
-    # B200 (192 GB) defaults: BF16 base and ~5x the RTX 5090 token budget (same packing as the full
-    # fine-tune per GPU).
-    exec bash scripts/finetune_lora.sh "${config}" --output_dir "${SENSENOVA_RUN_DIR}" \
-      --quant bf16 \
-      --expected_num_tokens 32768 --max_num_tokens 36864 \
-      --max_num_tokens_per_sample 16384 --prefer_buffer_before 15360 \
-      --use_flex True \
-      "${loader_args[@]}" "$@" ;;
+    exec bash scripts/finetune_lora.sh "${config}" --output_dir "${SENSENOVA_RUN_DIR}" "${lora_args[@]}" "${loader_args[@]}" "$@" ;;
   tiny)
-    [ -f "${SENSENOVA_RUN_DIR}/tiny_model/config.json" ] || \
+    if [ ! -f "${SENSENOVA_RUN_DIR}/tiny_model/config.json" ]; then
       python tools/make_tiny_model.py "${SENSENOVA_RUN_DIR}/tiny_model"
-    SENSENOVA_MODEL_DIR="${SENSENOVA_RUN_DIR}/tiny_model" SENSENOVA_RUN_DIR="${SENSENOVA_RUN_DIR}/run" \
-      exec bash scripts/finetune_full.sh "${config}" --total_steps 12 "${loader_args[@]}" "$@" ;;
+    fi
+    export SENSENOVA_MODEL_DIR="${SENSENOVA_RUN_DIR}/tiny_model" SENSENOVA_RUN_DIR="${SENSENOVA_RUN_DIR}/run"
+    exec bash scripts/finetune_full.sh "${config}" --total_steps 12 "${loader_args[@]}" "$@" ;;
 esac
 '
 
