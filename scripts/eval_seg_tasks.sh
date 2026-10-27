@@ -12,7 +12,8 @@
 #
 # Extra arguments go to every task (--adapter --model_path --split --limit --num_timesteps --cfg_text_scale
 # --seed); seg2img-only flags (--seeds N, --num_samples N, --check_seeds K, --no_fid, --no_roundtrip,
-# --no_photo_check) go in SEG2IMG_ARGS. All tasks resume. seg2img is sharded over all visible GPUs.
+# --no_photo_check) go in SEG2IMG_ARGS. All tasks resume. img2binseg and seg2img are sharded over all visible
+# GPUs; img2palette uses the first one.
 # FID-50k on CelebAMask-HQ val (2993 maps, ~17 seeds each; photo check and round trip once per map):
 #   EVAL_TASKS=seg2img SEG2IMG_ARGS="--num_samples 50000 --check_seeds 1" \
 #     bash scripts/eval_seg_tasks.sh celebamask results/eval/base_celebamask_fid50k
@@ -43,7 +44,19 @@ case "${dataset}" in
   *) >&2 echo "Error: dataset must be celebamask or cocostuff"; exit 1 ;;
 esac
 tasks="${EVAL_TASKS:-img2palette,img2binseg,seg2img}"
-echo "dataset=${dataset} root=${root} model=${MODEL_PATH} tasks=${tasks} out=${out}"
+num_gpus="$(nvidia-smi -L | wc -l)"
+echo "dataset=${dataset} root=${root} model=${MODEL_PATH} tasks=${tasks} gpus=${num_gpus} out=${out}"
+
+# Run the command once per GPU with --num_shards/--shard_id appended (shards share the output directory).
+run_shards() {
+  local pids=() failed=0 i
+  for ((i = 0; i < num_gpus; i++)); do
+    CUDA_VISIBLE_DEVICES="${i}" "$@" --num_shards "${num_gpus}" --shard_id "${i}" > >(sed "s/^/[gpu${i}] /") 2>&1 &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do wait "${pid}" || failed=1; done
+  [ "${failed}" = 0 ] || { >&2 echo "Error: a shard failed"; exit 1; }
+}
 
 for task in ${tasks//,/ }; do
   case "${task}" in
@@ -55,25 +68,21 @@ for task in ${tasks//,/ }; do
         echo "skip img2binseg: only implemented for celebamask"
         continue
       fi
-      python -m inference.benchmark.batch_celebamask_segment --method binary --prompt "${BINSEG_PROMPT:-native}" \
-        --dataset_root "${root}" --output_dir "${out}/img2binseg" "$@"
+      binseg_cmd=(python -m inference.benchmark.batch_celebamask_segment --method binary
+        --prompt "${BINSEG_PROMPT:-native}" --dataset_root "${root}" --output_dir "${out}/img2binseg" "$@")
+      if [ "${num_gpus}" -gt 1 ]; then
+        run_shards "${binseg_cmd[@]}"
+      else
+        "${binseg_cmd[@]}"
+      fi
       python tools/evaluation/segment/evaluate_celebamask.py --dataset_root "${root}" \
         --pred_dir "${out}/img2binseg/pred" ;;
     seg2img)
       seg2img_cmd=(python -m inference.benchmark.eval_seg_seg2img --dataset "${dataset}" --dataset_root "${root}"
         --max_mem_per_gpu "${max_mem}" --output_dir "${out}/seg2img" "$@" ${SEG2IMG_ARGS:-})
-      num_gpus="$(nvidia-smi -L | wc -l)"
       if [ "${num_gpus}" -gt 1 ]; then
-        # One shard per GPU writing into the same directory, then one pass that only computes the metrics.
-        pids=()
-        for ((i = 0; i < num_gpus; i++)); do
-          CUDA_VISIBLE_DEVICES="${i}" "${seg2img_cmd[@]}" --num_shards "${num_gpus}" --shard_id "${i}" \
-            --generate_only > >(sed "s/^/[gpu${i}] /") 2>&1 &
-          pids+=("$!")
-        done
-        failed=0
-        for pid in "${pids[@]}"; do wait "${pid}" || failed=1; done
-        [ "${failed}" = 0 ] || { >&2 echo "Error: a seg2img shard failed"; exit 1; }
+        # Shards only generate; one final pass computes the metrics from their files.
+        run_shards "${seg2img_cmd[@]}" --generate_only
         CUDA_VISIBLE_DEVICES=0 "${seg2img_cmd[@]}"
       else
         "${seg2img_cmd[@]}"
