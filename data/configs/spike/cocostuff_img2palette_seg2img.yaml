@@ -1,0 +1,31 @@
+# Copyright 2026 SenseTime Group Inc. and/or its affiliates.
+# COCO-Stuff (171 classes), two modes mixed in one run with 50/50 sampling (CocoStuffMultiTaskDataset,
+# data/cocostuff.py), read straight from the zips:
+#   img2palette  photo -> COCO-Stuff palette segmentation map   (prompt: IMG2PALETTE_PROMPT, fixed)
+#   seg2img      COCO-Stuff palette segmentation map -> photo   (prompt: seg2img_prompt(map), colour key of the
+#                                                                classes present in the input map)
+# Every sample draws its mode independently from the 118,287 train2017 images; val2017 stays held out.
+#   bash scripts/spike_submit.sh cocostuff-i2p-s2i full data/configs/spike/cocostuff_img2palette_seg2img.yaml \
+#       --total_steps 5000 --save_every 250
+
+cocostuff_multitask:
+  datasets:
+    cocostuff_train2017:
+      data_dir:   # Spike: flowmatching PVC mounted at /data
+        images: /data/datasets/segmentation/train2017.zip
+        labels: /data/datasets/segmentation/stuffthingmaps_trainval2017.zip
+        split: train2017
+      num_total_samples: 118287
+  mode_weights:
+    img2palette: 0.5
+    seg2img: 0.5
+  image_transform_args:           # COCO images are ~640x480 -> e.g. 512x384 (768 latent tokens)
+    image_stride: 16
+    max_image_size: 512
+    min_image_size: 256
+  vit_image_transform_args:
+    image_stride: 14
+    max_image_size: 518
+    min_image_size: 224
+  shuffle_seed: 0
+  weight: 1.0

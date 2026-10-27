@@ -1,0 +1,28 @@
+# Copyright 2026 SenseTime Group Inc. and/or its affiliates.
+# CelebAMask-HQ face parsing, all modes generated at training time by CelebAMaskMultiTaskDataset
+# (data/celebamask.py): img2palette, img2palette_partial, img2binseg, seg2img.
+#   bash scripts/spike_submit.sh celebamask-multitask full data/configs/spike/celebamask_multitask.yaml
+
+celebamask_multitask:
+  datasets:
+    celebamask_hq:
+      data_dir: /data/datasets/CelebAMask-HQ/CelebAMask-HQ   # Spike: flowmatching PVC mounted at /data
+      num_total_samples: 24183
+  split: train
+  mode_weights:
+    img2palette: 0.2
+    img2palette_partial: 0.2
+    img2binseg: 0.3
+    seg2img: 0.3
+  partial_size_range: [1, 17]   # any subset of the 18 classes, 1 to 17 classes per request
+  binary_present_prob: 0.8      # img2binseg: 80% present classes, 20% absent classes (all-black target)
+  image_transform_args:
+    image_stride: 16
+    max_image_size: 512
+    min_image_size: 512
+  vit_image_transform_args:
+    image_stride: 14
+    max_image_size: 518
+    min_image_size: 224
+  shuffle_seed: 0
+  weight: 1.0
