@@ -78,7 +78,7 @@ def main():
     for key in keys:
         conf += confusion(ds, ds.load(key)[1], np.asarray(Image.open(os.path.join(out, "pred", f"{key}.png"))))
     logs = [json.loads(l) for l in open(os.path.join(out, "log.jsonl"))]
-    metrics = {"dataset": ds.name, "num_images": len(keys), **summarize(ds, conf),
+    metrics = {"dataset": ds.name, "num_images": len(keys), "palette_key": args.palette_key, **summarize(ds, conf),
                "mean_off_palette_share": float(np.mean([l["off_palette"] for l in logs])),
                "seconds_per_image": float(np.mean([l["seconds"] for l in logs])),
                "confusion_matrix": conf.tolist()}

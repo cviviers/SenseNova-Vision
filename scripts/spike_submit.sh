@@ -15,7 +15,7 @@
 #         B200, override with e.g. --expected_num_tokens 16384 --max_num_tokens 20480
 #   tiny  smoke test: full recipe on a 2-layer model built from the release (tools/make_tiny_model.py)
 #   eval  scripts/eval_seg_tasks.sh (img2palette, img2binseg, seg2img; resumes; seg2img uses every GPU);
-#         EVAL_TASKS, SEG2IMG_ARGS and BINSEG_PROMPT are passed through when set
+#         EVAL_TASKS, SEG2IMG_ARGS, BINSEG_PROMPT and PALETTE_KEY are passed through when set
 #
 # Commit and push first: the job only sees what is on GitHub. Outputs go to /data/runs/<run>.
 #
@@ -125,6 +125,7 @@ eval_env=()
 [ -n "${EVAL_TASKS:-}" ] && eval_env+=(-e "EVAL_TASKS=${EVAL_TASKS}")
 [ -n "${SEG2IMG_ARGS:-}" ] && eval_env+=(-e "SEG2IMG_ARGS=${SEG2IMG_ARGS}")
 [ -n "${BINSEG_PROMPT:-}" ] && eval_env+=(-e "BINSEG_PROMPT=${BINSEG_PROMPT}")
+[ -n "${PALETTE_KEY:-}" ] && eval_env+=(-e "PALETTE_KEY=${PALETTE_KEY}")
 
 cmd=(
   runai training standard submit "${run}" -p "${project}"

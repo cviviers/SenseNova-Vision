@@ -32,7 +32,8 @@ class CelebAMaskEval:
     vae_transform = ImageTransform(512, 512, 16)
     vit_transform = ImageTransform(518, 224, 14)
 
-    def __init__(self, root):
+    def __init__(self, root, palette_key="none"):
+        # The CelebAMask-HQ img2palette prompt always lists the full colour key, so palette_key changes nothing.
         from data import celebamask as m
         self.m, self.root = m, root
         self.palette = m.PALETTE
@@ -64,9 +65,10 @@ class CocoStuffEval:
     vae_transform = ImageTransform(512, 256, 16)
     vit_transform = ImageTransform(518, 224, 14)
 
-    def __init__(self, root):
+    def __init__(self, root, palette_key="none"):
         from data import cocostuff as m
         self.m, self.root = m, root
+        self.palette_key = palette_key
         self.images = {}  # split -> _Source, opened once (the train2017 zip index is large)
         self.labels = m._Source(os.path.join(root, "stuffthingmaps_trainval2017.zip"))
         self.palette = m.PALETTE
@@ -90,7 +92,7 @@ class CocoStuffEval:
         return photo.resize(size, Image.BICUBIC), np.asarray(Image.fromarray(label).resize(size, Image.NEAREST))
 
     def img2palette_prompt(self):
-        return self.m.IMG2PALETTE_PROMPT
+        return self.m.IMG2PALETTE_FULL_KEY_PROMPT if self.palette_key == "full" else self.m.IMG2PALETTE_PROMPT
 
     def seg2img_prompt(self, label):
         return self.m.seg2img_prompt(label)
@@ -101,7 +103,7 @@ DATASETS = {"celebamask": CelebAMaskEval, "cocostuff": CocoStuffEval}
 
 def get_dataset(args):
     cls = DATASETS[args.dataset]
-    return cls(args.dataset_root or cls.default_root)
+    return cls(args.dataset_root or cls.default_root, palette_key=args.palette_key)
 
 
 # ----------------------------------------------------------------------------- model
@@ -112,6 +114,10 @@ def add_model_args(parser):
     parser.add_argument("--adapter", default=None,
                         help="LoRA checkpoint dir (adapter_model.safetensors + adapter_config.json); omit for the base model.")
     parser.add_argument("--max_mem_per_gpu", default="30GiB")
+    parser.add_argument("--palette_key", default="none", choices=["none", "full"],
+                        help="img2palette prompt (also the seg2img round trip): none = as trained; full = list "
+                             "the colour of every class, for zero-shot runs on COCO-Stuff, whose training prompt "
+                             "has no key. CelebAMask-HQ always lists its 18 classes.")
     parser.add_argument("--split", default="val")
     parser.add_argument("--limit", type=int, default=None, help="First N images of the split.")
     parser.add_argument("--num_timesteps", type=int, default=None)

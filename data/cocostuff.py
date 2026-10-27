@@ -104,6 +104,14 @@ IMG2PALETTE_PROMPT = (
     "classes), and colour pixels that belong to none of these classes black (0, 0, 0). Use flat colours only, "
     "with no shading or texture."
 )
+# Evaluation only (zero-shot baseline): the released model has never seen this palette, so the key for all 171
+# classes is spelled out (~4.6k characters). Fine-tuned models are evaluated with IMG2PALETTE_PROMPT, as trained.
+IMG2PALETTE_FULL_KEY_PROMPT = (
+    "Task: photo to segmentation map. The input is a photograph. Output its COCO-Stuff semantic segmentation "
+    "map, not a photograph. Colour every pixel with exactly one of these colours: "
+    f"{colour_key(USED_IDS)}; pixels that belong to none of these classes are black (0, 0, 0). Use flat "
+    "colours only, with no shading or texture."
+)
 PARTIAL_PROMPT_TEMPLATE = (
     "Segment only these COCO-Stuff classes in this photograph: {names}. Colour them with exactly these colours: "
     "{key}. Colour every other pixel black (0, 0, 0), including all other classes and unlabeled regions. Use flat "
