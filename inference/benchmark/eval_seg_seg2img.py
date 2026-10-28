@@ -11,6 +11,8 @@ generate a photo with the training prompt in edit mode, and measure
                scored (mIoU, dataset protocol) against the input map; outputs failing the photo check count
                as unlabeled/background (a copied map would otherwise score near-perfectly). The same
                segmenter on the real photos gives the ceiling; layout_ratio = round trip / ceiling.
+               *_ungated scores every output regardless of the photo check (stylised but well-laid-out
+               outputs the check rejects); read it together with photo_rate.
                Generator and judge share weights, so read it as a consistency check alongside FID.
 * FID / KID    clean-fid ("clean" resize) between the generated photos and the real photos of the same
                images at the same size. FID is strongly biased below ~2k images: compare runs at equal N,
@@ -201,24 +203,32 @@ def main():
         metrics.update(photo_rate=float(np.mean([l["is_photo"] for l in photo_logs])), photo_checked=len(photo_logs))
     if not args.no_roundtrip:
         conf = np.zeros((ds.num_ids, ds.num_ids), np.int64)
+        conf_ungated = np.zeros_like(conf)
         rt_logs = [l for l in logs if "roundtrip_off_palette" in l]
         for l in rt_logs:
             pred = np.asarray(Image.open(f"{out}/reseg/{l['key']}_s{l['seed']}.png"))
+            conf_ungated += confusion(ds, labels[l["key"]], pred)
             if not l.get("is_photo", True):
                 pred = np.zeros_like(pred)  # copied maps / silhouettes count as unlabeled
             conf += confusion(ds, labels[l["key"]], pred)
-        rt = summarize(ds, conf)
+        rt, rt_ungated = summarize(ds, conf), summarize(ds, conf_ungated)
         ceiling = json.load(open(f"{out}/ceiling.json"))["mIoU"]
+        # Gated: outputs failing the photo check score as unlabeled (catches copied maps, but also zeroes
+        # stylised outputs the check rejects). Ungated: every output's re-segmentation; read it together
+        # with photo_rate, since a copied map scores high here.
         metrics.update(roundtrip_mIoU=rt["mIoU"], ceiling_mIoU=ceiling,
-                       layout_ratio=rt["mIoU"] / ceiling if ceiling else None, roundtrip_checked=len(rt_logs),
-                       roundtrip_per_class_IoU=rt["per_class_IoU"])
+                       layout_ratio=rt["mIoU"] / ceiling if ceiling else None,
+                       roundtrip_mIoU_ungated=rt_ungated["mIoU"],
+                       layout_ratio_ungated=rt_ungated["mIoU"] / ceiling if ceiling else None,
+                       roundtrip_checked=len(rt_logs), roundtrip_per_class_IoU=rt["per_class_IoU"],
+                       roundtrip_per_class_IoU_ungated=rt_ungated["per_class_IoU"])
     if not args.no_fid:
         n_gen, n_ref = len(glob.glob(f"{out}/gen/*.png")), len(glob.glob(f"{out}/ref/*.png"))
         metrics.update(fid_kid(f"{out}/gen", f"{out}/ref"))
         metrics["fid_note"] = f"{n_gen} generated vs {n_ref} real; FID is biased below ~2k"
     json.dump(metrics, open(f"{out}/metrics.json", "w"), indent=2)
     write_sheet(out, ds, keys, labels)
-    print("[seg2img] " + json.dumps({k: v for k, v in metrics.items() if k != "roundtrip_per_class_IoU"}))
+    print("[seg2img] " + json.dumps({k: v for k, v in metrics.items() if not k.startswith("roundtrip_per_class")}))
 
 
 if __name__ == "__main__":
