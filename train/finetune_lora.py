@@ -16,12 +16,20 @@ single 24-32GB GPU (e.g. RTX 5090) can adapt the model:
 Adapters are saved as `adapter_model.safetensors` + `adapter_config.json`.
 Use `tools/merge_lora.py` to fold them into a regular model directory that the
 standard inference entrypoints can load.
+
+Re-running with the same `--output_dir` resumes from its latest checkpoint
+(`--resume True`, default): adapter weights, optimizer and LR schedule
+(`training_state.pt`). A checkpoint without that file (older runs) resumes the
+adapter and the schedule position with fresh AdamW statistics. The data stream
+is reseeded with the step, so it does not replay the samples already seen.
 """
 
 import functools
+import glob
 import json
 import math
 import os
+import shutil
 from dataclasses import asdict, dataclass, field
 from time import time
 
@@ -112,6 +120,10 @@ class FinetuneArguments:
     log_every: int = field(default=10)
     save_every: int = field(default=100)
     seed: int = field(default=42)
+    resume: bool = field(
+        default=True,
+        metadata={"help": "Continue from the latest checkpoint-* in --output_dir (e.g. after preemption)."},
+    )
 
 
 def build_model(model_path: str, timestep_shift: float):
@@ -218,15 +230,36 @@ def lora_state_dict(model: nn.Module) -> dict:
     }
 
 
-def save_adapter(model: nn.Module, adapter_config: dict, save_dir: str, step: int) -> None:
-    os.makedirs(save_dir, exist_ok=True)
-    save_file(lora_state_dict(model), os.path.join(save_dir, "adapter_model.safetensors"))
-    with open(os.path.join(save_dir, "adapter_config.json"), "w") as f:
+def save_adapter(model: nn.Module, adapter_config: dict, save_dir: str, step: int, training_state=None) -> None:
+    # Written to a temporary dir and renamed into place, so a preemption mid-save never leaves a
+    # half-written checkpoint for --resume to pick up.
+    tmp_dir = save_dir.rstrip("/") + ".tmp"
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    os.makedirs(tmp_dir)
+    save_file(lora_state_dict(model), os.path.join(tmp_dir, "adapter_model.safetensors"))
+    if training_state is not None:
+        torch.save(training_state, os.path.join(tmp_dir, "training_state.pt"))
+    with open(os.path.join(tmp_dir, "adapter_config.json"), "w") as f:
         json.dump({**adapter_config, "step": step}, f, indent=2)
+    shutil.rmtree(save_dir, ignore_errors=True)
+    os.rename(tmp_dir, save_dir)
     print(f"[finetune] saved adapter to {save_dir}")
 
 
-def build_dataloader(args: FinetuneArguments, tokenizer, new_token_ids, vae_config) -> DataLoader:
+def latest_checkpoint(output_dir: str):
+    """(dir, step) of the newest complete checkpoint-* in output_dir, or (None, 0)."""
+    best = (None, 0)
+    for path in glob.glob(os.path.join(output_dir, "checkpoint-*", "adapter_config.json")):
+        if os.path.dirname(path).endswith(".tmp"):
+            continue
+        with open(path) as f:
+            step = json.load(f).get("step", 0)
+        if step > best[1]:
+            best = (os.path.dirname(path), step)
+    return best
+
+
+def build_dataloader(args: FinetuneArguments, tokenizer, new_token_ids, vae_config, start_step: int = 0) -> DataLoader:
     with open(args.dataset_config_file) as f:
         dataset_meta = yaml.safe_load(f)
 
@@ -257,7 +290,7 @@ def build_dataloader(args: FinetuneArguments, tokenizer, new_token_ids, vae_conf
         interpolate_pos=False,
         use_flex=args.use_flex,
     )
-    dataset.set_epoch(args.seed)
+    dataset.set_epoch(args.seed + start_step)  # a resumed run gets a new file order instead of a replay
     return DataLoader(
         dataset,
         batch_size=1,
@@ -288,9 +321,10 @@ def main():
     assert torch.cuda.is_available(), "CUDA is required"
     assert args.quant in {"nf4", "bf16"}, "--quant must be nf4 or bf16"
     assert args.lora_experts in LORA_TARGETS, f"--lora_experts must be one of {list(LORA_TARGETS)}"
-    set_seed(args.seed)
     device = torch.device("cuda", torch.cuda.current_device())
     os.makedirs(args.output_dir, exist_ok=True)
+    resume_dir, start_step = latest_checkpoint(args.output_dir) if args.resume else (None, 0)
+    set_seed(args.seed + start_step)
     with open(os.path.join(args.output_dir, "finetune_args.json"), "w") as f:
         json.dump(asdict(args), f, indent=2)
 
@@ -311,6 +345,15 @@ def main():
         if param.requires_grad:
             param.data = param.data.float()
     model.to(device)
+    if resume_dir:
+        # Before activation checkpointing, so the names match lora_state_dict() (no wrapper prefix).
+        adapter = load_file(os.path.join(resume_dir, "adapter_model.safetensors"))
+        lora_names = {n for n, p in model.named_parameters() if p.requires_grad}
+        if set(adapter) != lora_names:
+            raise RuntimeError(f"{resume_dir} does not match this LoRA setup ({len(adapter)} vs {len(lora_names)} "
+                               f"tensors); use a new --output_dir or --resume False")
+        model.load_state_dict(adapter, strict=False)
+        print(f"[finetune] resuming from {resume_dir} (step {start_step})")
     apply_activation_checkpointing(
         model,
         checkpoint_wrapper_fn=functools.partial(checkpoint_wrapper, checkpoint_impl=CheckpointImpl.NO_REENTRANT),
@@ -327,9 +370,25 @@ def main():
 
     optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)
     scheduler = get_cosine_schedule_with_warmup(optimizer, args.warmup_steps, args.total_steps)
-    loader = build_dataloader(args, tokenizer, new_token_ids, vae_config)
+    state_path = os.path.join(resume_dir, "training_state.pt") if resume_dir else None
+    if state_path and os.path.exists(state_path):
+        state = torch.load(state_path, map_location=device, weights_only=True)
+        optimizer.load_state_dict(state["optimizer"])
+        scheduler.load_state_dict(state["scheduler"])
+    elif resume_dir:
+        # Adapter-only checkpoint: continue the LR schedule at start_step; AdamW statistics start fresh.
+        for group in optimizer.param_groups:
+            group["initial_lr"] = args.lr
+        # The constructor steps once: last_epoch becomes start_step, as after start_step optimizer steps.
+        scheduler = get_cosine_schedule_with_warmup(optimizer, args.warmup_steps, args.total_steps,
+                                                    last_epoch=start_step - 1)
+        print(f"[finetune] no training_state.pt: fresh AdamW, lr={scheduler.get_last_lr()[0]:.2e}")
+    if start_step >= args.total_steps:
+        print(f"[finetune] {resume_dir} is already at step {start_step} >= --total_steps; nothing to do")
+        os._exit(0)
+    loader = build_dataloader(args, tokenizer, new_token_ids, vae_config, start_step)
 
-    step, micro_step = 0, 0
+    step, micro_step = start_step, 0
     window = {"loss": [], "ce": [], "mse": [], "tokens": 0, "groups": {}}
     log_path = os.path.join(args.output_dir, "train_log.jsonl")
     t_log = time()
@@ -398,7 +457,8 @@ def main():
             t_log = time()
 
         if step % args.save_every == 0 and step < args.total_steps:
-            save_adapter(model, adapter_config, os.path.join(args.output_dir, f"checkpoint-{step:06d}"), step)
+            save_adapter(model, adapter_config, os.path.join(args.output_dir, f"checkpoint-{step:06d}"), step,
+                         {"optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict()})
         if step >= args.total_steps:
             break
 

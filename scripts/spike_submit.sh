@@ -11,7 +11,8 @@
 #
 #   full  scripts/finetune_full.sh (FSDP, all weights); resubmitting the same <run> resumes from its
 #         latest checkpoint
-#   lora  scripts/finetune_lora.sh (single GPU, no resume); BF16 base and 32k-token batches sized for a
+#   lora  scripts/finetune_lora.sh (single GPU; resubmitting the same <run> resumes from its latest
+#         checkpoint); BF16 base and 32k-token batches sized for a
 #         B200, override with e.g. --expected_num_tokens 16384 --max_num_tokens 20480
 #   tiny  smoke test: full recipe on a 2-layer model built from the release (tools/make_tiny_model.py)
 #   eval  scripts/eval_seg_tasks.sh (img2palette, img2binseg, seg2img; resumes; seg2img uses every GPU);
@@ -26,6 +27,9 @@
 #   SPIKE_IMAGE       default harbor.spike.tue.nl/flowmatching/sensenova-vision:1.0.0
 #   SPIKE_PULL_CRED   personal dockerRegistry credential for Harbor (default harbor-pull)
 #   SPIKE_UID/GID     user the job runs as; must own /data (default 20236095, `id` in the sshv3 workspace)
+#   SPIKE_PREEMPTIBILITY  preemptible or non-preemptible (default: non-preemptible for full/lora/tiny, which
+#                     must stay within the project quota; preemptible for eval, which may use idle GPUs over
+#                     quota and resumes per image). Preempted training restarts from its latest checkpoint.
 #   SPIKE_DRY_RUN=1   print the runai command instead of submitting it
 set -euo pipefail
 
@@ -40,6 +44,8 @@ case "${mode}" in
   lora | tiny | eval) default_compute=one-gpu ;;
   *) >&2 echo "Error: mode must be full, lora, tiny or eval"; exit 1 ;;
 esac
+if [ "${mode}" = eval ]; then default_preempt=preemptible; else default_preempt=non-preemptible; fi
+preemptibility="${SPIKE_PREEMPTIBILITY:-${default_preempt}}"
 if [ "${mode}" = eval ]; then
   [[ "${config}" =~ ^(celebamask|cocostuff)$ ]] || { >&2 echo "Error: eval takes celebamask or cocostuff"; exit 1; }
   config_file=scripts/eval_seg_tasks.sh
@@ -135,6 +141,7 @@ cmd=(
   --image-pull-my-credentials "type=dockerRegistry,name=${pull_cred}"
   --run-as-uid "${uid}" --run-as-gid "${gid}" --create-home-dir
   --compute "${compute}"
+  --preemptibility "${preemptibility}"
   --large-shm
   --datasource "type=pvc,name=${project}"
   -e "RUN=${run}"
@@ -157,7 +164,7 @@ cmd=(
   --command -- bash -c "${job_script}" bash "${mode}" "${config}" "$@"
 )
 
-echo "run=${run} mode=${mode} compute=${compute} ref=${ref} commit=${commit:0:8} config=${config}"
+echo "run=${run} mode=${mode} compute=${compute} ${preemptibility} ref=${ref} commit=${commit:0:8} config=${config}"
 if [ "${SPIKE_DRY_RUN:-0}" = "1" ]; then
   printf '%q ' "${cmd[@]}"; echo
   exit 0
