@@ -8,15 +8,17 @@
 #   bash scripts/spike_submit.sh <run> eval <celebamask|cocostuff> [extra eval args, e.g. --limit 500]
 #       zero-shot: no extra model args; LoRA: --adapter /data/runs/<lora run>/final;
 #       full fine-tune: --model_path /data/runs/<run>/export_<step>
+#   bash scripts/spike_submit.sh <full run> export <step, e.g. 0000449>
 #
-#   full  scripts/finetune_full.sh (FSDP, all weights); resubmitting the same <run> resumes from its
-#         latest checkpoint
-#   lora  scripts/finetune_lora.sh (single GPU; resubmitting the same <run> resumes from its latest
-#         checkpoint); BF16 base and 32k-token batches sized for a
-#         B200, override with e.g. --expected_num_tokens 16384 --max_num_tokens 20480
-#   tiny  smoke test: full recipe on a 2-layer model built from the release (tools/make_tiny_model.py)
-#   eval  scripts/eval_seg_tasks.sh (img2palette, img2binseg, seg2img; resumes; seg2img uses every GPU);
-#         EVAL_TASKS, SEG2IMG_ARGS and BINSEG_PROMPT are passed through when set
+#   full    scripts/finetune_full.sh (FSDP, all weights); resubmitting the same <run> resumes from its
+#           latest checkpoint. B200 batch profile below: 2x the release's batch per update.
+#   lora    scripts/finetune_lora.sh (single GPU; resubmitting the same <run> resumes from its latest
+#           checkpoint); BF16 base and 131k-token batches sized for a B200 (profile below)
+#   tiny    smoke test: full recipe on a 2-layer model built from the release (tools/make_tiny_model.py)
+#   eval    scripts/eval_seg_tasks.sh (img2palette, img2binseg, seg2img; resumes; seg2img uses every GPU);
+#           EVAL_TASKS, SEG2IMG_ARGS and BINSEG_PROMPT are passed through when set
+#   export  tools/export_full_checkpoint.py: /data/runs/<run>/checkpoint/<step> -> /data/runs/<run>/export_<step>
+#           (BF16 EMA weights, a model dir for --model_path); the workload is named <run>-export-<step>
 #
 # Commit and push first: the job only sees what is on GitHub. Outputs go to /data/runs/<run>.
 #
@@ -28,30 +30,41 @@
 #   SPIKE_PULL_CRED   personal dockerRegistry credential for Harbor (default harbor-pull)
 #   SPIKE_UID/GID     user the job runs as; must own /data (default 20236095, `id` in the sshv3 workspace)
 #   SPIKE_PREEMPTIBILITY  preemptible or non-preemptible (default: non-preemptible for full/lora/tiny, which
-#                     must stay within the project quota; preemptible for eval, which may use idle GPUs over
-#                     quota and resumes per image). Preempted training restarts from its latest checkpoint.
+#                     must stay within the project quota; preemptible for eval and export, which may use idle
+#                     GPUs over quota; eval resumes per image). Preempted training restarts from its latest
+#                     checkpoint.
 #   SPIKE_DRY_RUN=1   print the runai command instead of submitting it
 set -euo pipefail
 
 run="${1:?run name (lowercase letters, digits and dashes)}"
-mode="${2:?mode: full, lora, tiny or eval}"
-config="${3:?dataset config yaml (eval: celebamask or cocostuff)}"
+mode="${2:?mode: full, lora, tiny, eval or export}"
+config="${3:?dataset config yaml (eval: celebamask or cocostuff; export: checkpoint step)}"
 shift 3
 
 [[ "${run}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || { >&2 echo "Error: run name must match [a-z0-9-]"; exit 1; }
 case "${mode}" in
   full) default_compute=eight-gpu ;;
-  lora | tiny | eval) default_compute=one-gpu ;;
-  *) >&2 echo "Error: mode must be full, lora, tiny or eval"; exit 1 ;;
+  lora | tiny | eval | export) default_compute=one-gpu ;;
+  *) >&2 echo "Error: mode must be full, lora, tiny, eval or export"; exit 1 ;;
 esac
-if [ "${mode}" = eval ]; then default_preempt=preemptible; else default_preempt=non-preemptible; fi
+case "${mode}" in
+  eval | export) default_preempt=preemptible ;;
+  *) default_preempt=non-preemptible ;;
+esac
 preemptibility="${SPIKE_PREEMPTIBILITY:-${default_preempt}}"
-if [ "${mode}" = eval ]; then
-  [[ "${config}" =~ ^(celebamask|cocostuff)$ ]] || { >&2 echo "Error: eval takes celebamask or cocostuff"; exit 1; }
-  config_file=scripts/eval_seg_tasks.sh
-else
-  config_file="${config}"
-fi
+job_name="${run}"
+case "${mode}" in
+  eval)
+    [[ "${config}" =~ ^(celebamask|cocostuff)$ ]] || { >&2 echo "Error: eval takes celebamask or cocostuff"; exit 1; }
+    config_file=scripts/eval_seg_tasks.sh ;;
+  export)
+    [[ "${config}" =~ ^[0-9]{7}$ ]] || { >&2 echo "Error: export takes a 7-digit checkpoint step, e.g. 0000449"; exit 1; }
+    config_file=tools/export_full_checkpoint.py
+    # The training workload keeps the run's name; the export reads and writes the same /data/runs/<run>.
+    job_name="${run}-export-$((10#${config}))" ;;
+  *)
+    config_file="${config}" ;;
+esac
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 repo_url="https://github.com/cviviers/SenseNova-Vision"
@@ -100,16 +113,31 @@ echo "${COMMIT}" >> "${SENSENOVA_RUN_DIR}/commits.txt"
 # ~5 cores for the training process, pinning and NCCL. Extra args come last and override these.
 loader_args=(--num_workers 8 --prefetch_factor 4)
 
+# B200 (192 GB) batch profiles. With --use_flex False attention runs per sample, so memory grows linearly
+# with the tokens per step; the 32k tokens per GPU of the release recipe leave most of a B200 unused. Batch-coupled
+# settings (tokens, accumulation, lr) live together here; extra args come last and override them. If the
+# logged peak memory passes ~165 GB, pass --expected_num_tokens 98304 --max_num_tokens 106496.
+#
+# Full: 131k tokens per GPU and no accumulation = ~300 samples of 512 px per update on 8 GPUs, 2x the
+# release recipe (32k x 2 accumulation); lr scaled by sqrt(2) from 2.5e-5. total_steps now counts updates: 450
+# (CelebAMask-HQ) / 775 (COCO-Stuff) see as many samples as 1800 / 3100 micro-steps of the release recipe.
+# Estimated ~100-130 GB per GPU (sharded FP32 weights/grads/AdamW/EMA ~36 GB + activations).
 # flex attention backward fails to compile on B200 (sm_100) with torch 2.8 / Triton 3.4 (full, tiny and lora).
-full_args=(--use_flex False)
+full_args=(
+  --use_flex False
+  --expected_num_tokens 131072 --max_num_tokens 139264 --prefer_buffer_before 65536
+  --gradient_accumulation_steps 1
+  --lr 3.5e-5
+)
 
-# B200 (192 GB) LoRA defaults: BF16 base and ~5x the RTX 5090 token budget (same packing as the full
-# fine-tune per GPU). Measured on CelebAMask-HQ: 51 GB peak, ~6.6k tok/s (~5 s/step, ~8.6 images/step).
+# LoRA: BF16 base and 4x the v2 batch (32k tokens: 51 GB peak, ~6.6k tok/s, ~5 s/step, ~8.6 images/step),
+# so ~34 images per step at an estimated ~115 GB peak; lr scaled by sqrt(4) from 1e-4.
 lora_args=(
   --quant bf16
-  --expected_num_tokens 32768 --max_num_tokens 36864
-  --max_num_tokens_per_sample 16384 --prefer_buffer_before 15360
-  --use_flex False   # flex attention backward fails to compile on B200 (sm_100) with torch 2.8 / Triton 3.4
+  --expected_num_tokens 131072 --max_num_tokens 139264
+  --max_num_tokens_per_sample 16384 --prefer_buffer_before 65536
+  --lr 2e-4
+  --use_flex False
 )
 
 # No backslash line continuations in this script: Run:ai stores the command as one string and drops
@@ -127,6 +155,8 @@ case "${mode}" in
     exec bash scripts/finetune_full.sh "${config}" --total_steps 12 "${full_args[@]}" "${loader_args[@]}" "$@" ;;
   eval)
     exec bash scripts/eval_seg_tasks.sh "${config}" "${SENSENOVA_RUN_DIR}" "$@" ;;
+  export)
+    exec python tools/export_full_checkpoint.py --checkpoint "${SENSENOVA_RUN_DIR}/checkpoint/${config}" --output_dir "${SENSENOVA_RUN_DIR}/export_${config}" "$@" ;;
 esac
 '
 
@@ -136,7 +166,7 @@ eval_env=()
 [ -n "${BINSEG_PROMPT:-}" ] && eval_env+=(-e "BINSEG_PROMPT=${BINSEG_PROMPT}")
 
 cmd=(
-  runai training standard submit "${run}" -p "${project}"
+  runai training standard submit "${job_name}" -p "${project}"
   -i "${image}"
   --image-pull-my-credentials "type=dockerRegistry,name=${pull_cred}"
   --run-as-uid "${uid}" --run-as-gid "${gid}" --create-home-dir
@@ -164,11 +194,11 @@ cmd=(
   --command -- bash -c "${job_script}" bash "${mode}" "${config}" "$@"
 )
 
-echo "run=${run} mode=${mode} compute=${compute} ${preemptibility} ref=${ref} commit=${commit:0:8} config=${config}"
+echo "run=${run} job=${job_name} mode=${mode} compute=${compute} ${preemptibility} ref=${ref} commit=${commit:0:8} config=${config}"
 if [ "${SPIKE_DRY_RUN:-0}" = "1" ]; then
   printf '%q ' "${cmd[@]}"; echo
   exit 0
 fi
 "${cmd[@]}"
-echo "Follow:  runai training standard logs ${run} -p ${project} --follow"
+echo "Follow:  runai training standard logs ${job_name} -p ${project} --follow"
 echo "Outputs: /data/runs/${run}"

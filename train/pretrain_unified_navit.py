@@ -665,6 +665,7 @@ def main():
     start_time = time()
     logger.info(f"Training for {training_args.total_steps} steps, starting at {train_step}...")
     trained_tokens = 0
+    last_log_tokens = 0
     group_window = {}  # per-sample-group (dataset mode or name) loss sums on this rank since the last log
     for curr_step, data in enumerate(train_loader, start=train_step):
         data = data.cuda(device).to_dict()
@@ -776,6 +777,11 @@ def main():
             torch.cuda.synchronize()
             end_time = time()
             steps_per_sec = training_args.log_every / (end_time - start_time)
+            # Peak memory (max over ranks) and throughput since the last log, to size batches from the live log.
+            mem_allocated = torch.tensor(torch.cuda.max_memory_allocated() / 1024**2, device=device)
+            dist.all_reduce(mem_allocated, op=dist.ReduceOp.MAX)
+            tok_per_s_per_gpu = (trained_tokens - last_log_tokens) / (end_time - start_time) / dist.get_world_size()
+            last_log_tokens = trained_tokens
             message = f"(step={curr_step:07d}) "
             wandb_log = {}
             for key, value in loss_dict.items():
@@ -788,6 +794,7 @@ def main():
             message += f"Train Steps/Sec: {steps_per_sec:.2f}, "
             message += f"Current Trained Samples: {total_samples}, mse_tokens={total_mse_tokens.item()}, ce_tokens={total_ce_tokens.item()}, "
             message += f"Total Trained Tokens: {trained_tokens}, "
+            message += f"Peak Mem: {mem_allocated.item() / 1024:.1f} GiB, Tok/s/GPU: {tok_per_s_per_gpu:.0f}, "
             # Combine the per-mode sums of all ranks.
             gathered = [None] * dist.get_world_size()
             dist.all_gather_object(gathered, group_window)
@@ -807,7 +814,9 @@ def main():
             if dist.get_rank() == 0:
                 with open(os.path.join(training_args.results_dir, "train_log.jsonl"), "a") as f:
                     f.write(json.dumps({"step": curr_step, "loss": {k: float(v) for k, v in wandb_log.items()},
-                                        "per_group": per_group, "lr": optimizer.param_groups[0]["lr"]}) + "\n")
+                                        "per_group": per_group, "lr": optimizer.param_groups[0]["lr"],
+                                        "peak_mem_gib": mem_allocated.item() / 1024,
+                                        "tok_per_s_per_gpu": tok_per_s_per_gpu}) + "\n")
 
             wandb_log['lr'] = optimizer.param_groups[0]['lr']
             wandb_log['total_mse_tokens'] = total_mse_tokens.item()
@@ -816,8 +825,6 @@ def main():
                 wandb_log['total_norm'] = total_norm.item()
             wandb_log['total_samples'] = total_samples.item()
 
-            mem_allocated = torch.tensor(torch.cuda.max_memory_allocated() / 1024**2, device=device)
-            dist.all_reduce(mem_allocated, op=dist.ReduceOp.MAX)
             wandb_log['mem_allocated'] = mem_allocated
             mem_cache = torch.tensor(torch.cuda.max_memory_reserved() / 1024**2, device=device)
             dist.all_reduce(mem_cache, op=dist.ReduceOp.MAX)

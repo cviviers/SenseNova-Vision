@@ -89,6 +89,8 @@ py_cmd=(
   --vae_cond_dropout_prob 0.1
   # Sequence packing per GPU, as in train_cv_unify.sh: ~10 samples of 2.5-3.7k tokens per micro-step and GPU.
   # B200 (sm_100): pass --use_flex False (flex attention backward does not compile there with torch 2.8).
+  # scripts/spike_submit.sh uses a B200 profile instead: 131k tokens per GPU, no accumulation, lr 3.5e-5
+  # (2x the batch per update of this recipe).
   --use_flex True
   --split_vae_encode True
   --max_latent_size 64
