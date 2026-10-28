@@ -11,7 +11,7 @@ target images, CE on target text) with the same conditioning dropout, and log th
 | Trained | rank-16 adapters on every decoder linear of both experts (80.7M params, FP32) | all weights except the VAE (~14.6B, FP32 master weights) + EMA copy |
 | Base weights | frozen; NF4 (`--quant nf4`, default) or BF16 (`--quant bf16`) | trained |
 | Memory | NF4 ~15 GB, BF16 ~40 GB (one GPU) | ~290 GB of weights/grads/optimizer/EMA sharded per node, plus activations: ≥ 8 × 80 GB |
-| Defaults | lr 1e-4, 300 steps, ~6-8k tokens per step | lr 1e-5 cosine → 1e-6, 200 warmup, 5,000 steps, EMA 0.999, 32-36k tokens per GPU per step |
+| Defaults | lr 1e-4, 300 steps, ~6-8k tokens per step | the release's recipe (`scripts/train_cv_unify.sh`): lr 2.5e-5 constant, EMA 0.995, 2 accumulation steps, 32-36k tokens per GPU per micro-step; 100 warmup updates and 2,000 micro-batch steps (~76 samples each on 8 GPUs; ~150k samples) |
 | Checkpoint | `adapter_model.safetensors` (~320 MB) | FP32 `model.safetensors` + `ema.safetensors` (~58 GB each) + sharded optimizer |
 | For evaluation | pass `--adapter <dir>` (applied in memory) | `tools/export_full_checkpoint.py` → model dir, pass `--model_path <dir>` |
 
@@ -26,7 +26,7 @@ bash scripts/finetune_lora.sh <config.yaml> --output_dir results/<run> --total_s
 
 ```bash
 # one node: uses every visible GPU; model sharded over the node's GPUs, replicated across nodes
-bash scripts/finetune_full.sh <config.yaml> [--total_steps 5000] [--lr 1e-5] [...]
+bash scripts/finetune_full.sh <config.yaml> [--total_steps 2000] [--lr 2.5e-5] [...]
 # multi-node: run on every node with WORLD_SIZE (nodes), RANK, MASTER_ADDR, MASTER_PORT set
 ```
 
@@ -44,12 +44,12 @@ bash scripts/finetune_full.sh <config.yaml> [--total_steps 5000] [--lr 1e-5] [..
 Export a checkpoint and evaluate it:
 
 ```bash
-python tools/export_full_checkpoint.py --checkpoint results/full_<config>/checkpoint/0005000 \
-  --output_dir results/full_<config>/export_0005000            # BF16 EMA weights + base configs
+python tools/export_full_checkpoint.py --checkpoint results/full_<config>/checkpoint/0001999 \
+  --output_dir results/full_<config>/export_0001999            # BF16 EMA weights + base configs
 python -m inference.benchmark.eval_seg_img2palette --dataset celebamask \
-  --model_path results/full_<config>/export_0005000 --output_dir results/eval_full/img2palette --limit 500
+  --model_path results/full_<config>/export_0001999 --output_dir results/eval_full/img2palette --limit 500
 python -m inference.benchmark.eval_seg_seg2img --dataset celebamask \
-  --model_path results/full_<config>/export_0005000 --output_dir results/eval_full/seg2img --limit 500
+  --model_path results/full_<config>/export_0001999 --output_dir results/eval_full/seg2img --limit 500
 ```
 
 ### Smoke test on the target machine

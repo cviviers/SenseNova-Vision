@@ -94,6 +94,9 @@ echo "${COMMIT}" >> "${SENSENOVA_RUN_DIR}/commits.txt"
 # ~5 cores for the training process, pinning and NCCL. Extra args come last and override these.
 loader_args=(--num_workers 8 --prefetch_factor 4)
 
+# flex attention backward fails to compile on B200 (sm_100) with torch 2.8 / Triton 3.4 (full, tiny and lora).
+full_args=(--use_flex False)
+
 # B200 (192 GB) LoRA defaults: BF16 base and ~5x the RTX 5090 token budget (same packing as the full
 # fine-tune per GPU). Measured on CelebAMask-HQ: 51 GB peak, ~6.6k tok/s (~5 s/step, ~8.6 images/step).
 lora_args=(
@@ -107,7 +110,7 @@ lora_args=(
 # them, which silently cuts a command off at the line break.
 case "${mode}" in
   full)
-    exec bash scripts/finetune_full.sh "${config}" "${loader_args[@]}" "$@" ;;
+    exec bash scripts/finetune_full.sh "${config}" "${full_args[@]}" "${loader_args[@]}" "$@" ;;
   lora)
     exec bash scripts/finetune_lora.sh "${config}" --output_dir "${SENSENOVA_RUN_DIR}" "${lora_args[@]}" "${loader_args[@]}" "$@" ;;
   tiny)
@@ -115,7 +118,7 @@ case "${mode}" in
       python tools/make_tiny_model.py "${SENSENOVA_RUN_DIR}/tiny_model"
     fi
     export SENSENOVA_MODEL_DIR="${SENSENOVA_RUN_DIR}/tiny_model" SENSENOVA_RUN_DIR="${SENSENOVA_RUN_DIR}/run"
-    exec bash scripts/finetune_full.sh "${config}" --total_steps 12 "${loader_args[@]}" "$@" ;;
+    exec bash scripts/finetune_full.sh "${config}" --total_steps 12 "${full_args[@]}" "${loader_args[@]}" "$@" ;;
   eval)
     exec bash scripts/eval_seg_tasks.sh "${config}" "${SENSENOVA_RUN_DIR}" "$@" ;;
 esac

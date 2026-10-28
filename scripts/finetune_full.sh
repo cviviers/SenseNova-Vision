@@ -16,7 +16,7 @@
 #   SENSENOVA_RUN_DIR        output dir (default results/full_<config name>); re-running resumes from its
 #                            latest checkpoint
 #
-# Fine-tune defaults below can be overridden by passing the same flag again, e.g. --total_steps 10000.
+# Fine-tune defaults below can be overridden by passing the same flag again, e.g. --total_steps 2000.
 # Each checkpoint stores full FP32 model + EMA weights (~58 GB each) plus sharded optimizer states.
 # Export one for evaluation with tools/export_full_checkpoint.py.
 set -euo pipefail
@@ -65,17 +65,21 @@ py_cmd=(
   --sharding_strategy HYBRID_SHARD
   --num_shard "${num_shard}"
   --num_replicate "${num_replicate}"
-  # Optimisation: short fine-tune at a lower LR than pre-training (2.5e-5 there).
-  --lr 1e-5
-  --min_lr 1e-6
-  --lr_scheduler cosine
-  --warmup_steps 200
-  --total_steps 5000
-  --ema 0.999
+  # Optimisation: the release's own fine-tune recipe (scripts/train_cv_unify.sh): constant LR 2.5e-5, EMA
+  # 0.995, 2 accumulation steps; AdamW betas (0.9, 0.95), eps 1e-15 and no weight decay are the trainer
+  # defaults. Shorter warmup (500 there) and run.
+  # Units: total_steps, save_every and log_every count micro-batches (one packed batch per GPU, ~76 samples
+  # of 512 px on 8 GPUs); warmup_steps and the EMA count optimizer updates (every 2 micro-batches). 2,000
+  # steps = 1,000 updates, ~150k samples: ~6 passes over CelebAMask-HQ train or ~1.3 over COCO train2017.
+  --lr 2.5e-5
+  --lr_scheduler constant
+  --warmup_steps 100
+  --total_steps 2000
+  --ema 0.995
   --max_grad_norm 1.0
-  --gradient_accumulation_steps 1
+  --gradient_accumulation_steps 2
   --log_every 10
-  --save_every 1000
+  --save_every 500   # each checkpoint: FP32 model + EMA (~117 GB) plus optimizer shards
   # Losses and conditioning dropout (classifier-free guidance), as in pre-training.
   --timestep_shift 4.0
   --ce_weight 0.25
@@ -83,13 +87,14 @@ py_cmd=(
   --text_cond_dropout_prob 0.05
   --vit_cond_dropout_prob 0.1
   --vae_cond_dropout_prob 0.1
-  # Sequence packing per GPU (80 GB): ~10 samples of 2.5-3.7k tokens per step and GPU.
+  # Sequence packing per GPU, as in train_cv_unify.sh: ~10 samples of 2.5-3.7k tokens per micro-step and GPU.
+  # B200 (sm_100): pass --use_flex False (flex attention backward does not compile there with torch 2.8).
   --use_flex True
   --split_vae_encode True
   --max_latent_size 64
   --max_num_tokens 36864
   --expected_num_tokens 32768
-  --max_num_tokens_per_sample 16384
+  --max_num_tokens_per_sample 24064
   --prefer_buffer_before 15360
   --data_seed 42
   "$@"

@@ -53,6 +53,20 @@ class CelebAMaskEval:
     def seg2img_prompt(self, label):
         return self.m.seg2img_prompt(label)
 
+    def seg2img_region_prompt(self, label):
+        # Zero-shot prompt of the earlier mask2face sweep: region names, no colours (colour keys make the
+        # base model copy the map).
+        from inference.benchmark.batch_celebamask_mask2face import make_prompt
+        return make_prompt("celeb_dynamic", label)
+
+
+# Region-name seg2img prompt for COCO-Stuff, worded like celeb_dynamic (batch_celebamask_mask2face.py).
+COCO_REGION_PROMPT = (
+    "Convert this segmentation map into a photorealistic COCO-style photograph. Strictly preserve the geometry "
+    "and boundaries of all regions while generating natural textures, materials, and soft photographic lighting. "
+    "Do not alter the scene layout or retain segmentation colors. The segmentation map contains these regions: "
+)
+
 
 class CocoStuffEval:
     name = "cocostuff"
@@ -95,8 +109,11 @@ class CocoStuffEval:
     def seg2img_prompt(self, label):
         return self.m.seg2img_prompt(label)
 
+    def seg2img_region_prompt(self, label):
+        return COCO_REGION_PROMPT + ", ".join(self.m.phrase(int(c)) for c in np.unique(label) if c) + "."
 
-DATASETS = {"celebamask": CelebAMaskEval, "cocostuff": CocoStuffEval}
+
+DATASETS ={"celebamask": CelebAMaskEval, "cocostuff": CocoStuffEval}
 
 
 def get_dataset(args):

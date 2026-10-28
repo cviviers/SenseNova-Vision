@@ -11,8 +11,9 @@
 #   seg2img      palette map -> photo, photo rate / layout / FID / KID  -> <output_dir>/seg2img/metrics.json
 #
 # Extra arguments go to every task (--adapter --model_path --split --limit --num_timesteps --cfg_text_scale
-# --seed); seg2img-only flags (--seeds N, --num_samples N, --check_seeds K, --no_fid, --no_roundtrip,
-# --no_photo_check) go in SEG2IMG_ARGS. All tasks resume. img2binseg and seg2img are sharded over all visible
+# --seed); seg2img-only flags (--prompt training|regions, --seeds N, --num_samples N, --check_seeds K, --no_fid,
+# --no_roundtrip, --no_photo_check) go in SEG2IMG_ARGS. Zero-shot seg2img: --prompt regions --cfg_img_scale 1.2
+# (the training prompt's colour key makes the base model copy the map). All tasks resume. img2binseg and seg2img are sharded over all visible
 # GPUs; img2palette uses the first one.
 # FID-50k on CelebAMask-HQ val (2993 maps, ~17 seeds each; photo check and round trip once per map):
 #   EVAL_TASKS=seg2img SEG2IMG_ARGS="--num_samples 50000 --check_seeds 1" \

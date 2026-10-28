@@ -20,6 +20,9 @@ Large FID runs: --num_samples 50000 reuses every map with new noise seeds until 
 --check_seeds 1 limits the photo check / round trip to one photo per map, and --num_shards/--shard_id
 --generate_only split the work over GPUs (scripts/eval_seg_tasks.sh does this for all visible GPUs).
 
+Zero-shot (base model): --prompt regions --cfg_img_scale 1.2. The training prompt's colour key makes the base
+model return a recoloured copy of the map (photo rate 0 on pilots); region names without colours give photos.
+
 Outputs (resumable per image/seed; shards share the directory):
     gen/<key>_s<seed>.png    generated photos            ref/<key>.png    real photos (training size)
     reseg/<key>_s<seed>.png  round-trip label maps       ceiling/<key>.png  segmenter on the real photo
@@ -86,6 +89,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_model_args(parser)
     parser.add_argument("--output_dir", required=True)
+    parser.add_argument("--prompt", choices=("training", "regions"), default="training",
+                        help="training: the fine-tuning prompt with the colour key of the classes present; regions: "
+                             "region names without colours, for the base model (a colour key makes it copy the "
+                             "map; use with --cfg_img_scale 1.2).")
     parser.add_argument("--seeds", type=int, default=1, help="Photos per map (noise seeds 0..N-1).")
     parser.add_argument("--num_samples", type=int, default=None,
                         help="Generate exactly N photos, cycling over the maps with a new seed each round (seed 0 for "
@@ -105,6 +112,7 @@ def main():
     args = parser.parse_args()
 
     ds = get_dataset(args)
+    prompt_fn = ds.seg2img_prompt if args.prompt == "training" else ds.seg2img_region_prompt
     out = args.output_dir
     for sub in ("gen", "ref", "reseg", "ceiling"):
         os.makedirs(os.path.join(out, sub), exist_ok=True)
@@ -145,7 +153,7 @@ def main():
             save_png(photo, f"{out}/ref/{k}.png")
         t0 = time.time()
         gen = model.generate(contents=[{"type": "image", "value": Image.fromarray(ds.palette[label])},
-                                       {"type": "text", "value": ds.seg2img_prompt(label)}],
+                                       {"type": "text", "value": prompt_fn(label)}],
                              mode="edit", noise_seed=1000 * s + int(k) % 1_000_000, **params, **transforms)
         gen = gen.convert("RGB").resize(photo.size, Image.BICUBIC)
         rec = {"key": k, "seed": s, "seconds": round(time.time() - t0, 2)}
