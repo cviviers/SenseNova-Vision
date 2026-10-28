@@ -119,8 +119,8 @@ loader_args=(--num_workers 8 --prefetch_factor 4)
 # logged peak memory passes ~165 GB, pass --expected_num_tokens 98304 --max_num_tokens 106496.
 #
 # Full: 131k tokens per GPU and no accumulation = ~300 samples of 512 px per update on 8 GPUs, 2x the
-# release recipe (32k x 2 accumulation); lr scaled by sqrt(2) from 2.5e-5. total_steps now counts updates: 450
-# (CelebAMask-HQ) / 775 (COCO-Stuff) see as many samples as 1800 / 3100 micro-steps of the release recipe.
+# release recipe (32k x 2 accumulation); lr scaled by sqrt(2) from 2.5e-5. total_steps, save_every and
+# log_every then count updates: N steps = ~300 N samples (~4 N micro-steps of the release recipe).
 # Estimated ~100-130 GB per GPU (sharded FP32 weights/grads/AdamW/EMA ~36 GB + activations).
 # flex attention backward fails to compile on B200 (sm_100) with torch 2.8 / Triton 3.4 (full, tiny and lora).
 full_args=(
