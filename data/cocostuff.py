@@ -134,9 +134,10 @@ def seg2img_prompt(label):
 # there through SegJSONLIterableDataset with think_mode). The prompt lists every class as <p>name</p>; the answer
 # is a colour legend <p>name<color>(R, G, B)</color></p> of the classes present (text, with CE loss) followed by
 # a mask in those colours. As in the base model's own (greedy) answers on COCO, colours follow the legend
-# position, not the class: the largest class comes first and is white, then a fixed sequence in descending RGB
-# order. The mask's colours are therefore defined by the legend text, and the legend itself is fully
-# predictable from the image (no randomly drawn colours, whose digits the CE loss could never learn).
+# position, not the class: the largest class comes first and is white, then a fixed sequence (the palette in
+# its farthest-point order, so the most-used early positions are as far apart as possible). The mask's colours
+# are therefore defined by the legend text, and the legend itself is fully predictable from the image (no
+# randomly drawn colours, whose digits the CE loss could never learn).
 def legend_name(cid):
     """Class name as the base model writes it in a legend: 'sky-other' -> 'sky', 'wall-brick' -> 'wall brick'."""
     return CLASS_NAMES[cid].replace("-other", "").replace("-stuff", "").replace("-", " ")
@@ -149,7 +150,7 @@ LEGEND_PROMPT = (
 )
 
 
-LEGEND_COLOURS = [(255, 255, 255)] + sorted((tuple(int(v) for v in PALETTE[c]) for c in USED_IDS), reverse=True)
+LEGEND_COLOURS = [(255, 255, 255)] + [tuple(int(v) for v in PALETTE[c]) for c in USED_IDS]  # farthest-point order
 
 
 def legend_task(label):

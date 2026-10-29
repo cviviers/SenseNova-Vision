@@ -32,10 +32,10 @@ mask → photo lists only the classes present in its input map, which are read f
 full key costs ~2,700 extra tokens per photo → palette sample, so COCO-Stuff packs fewer samples per step.
 
 `img2palette_legend` is the released model's native format for semantic segmentation (paper Sec. 3). The
-answer is a legend `<p>sky<color>(255, 255, 255)</color></p>, <p>person<color>(255, 238, 51)</color></p>, …`
+answer is a legend `<p>sky<color>(255, 255, 255)</color></p>, <p>person<color>(0, 119, 255)</color></p>, …`
 of the classes present, largest first, trained with the text (CE) loss, followed by the mask in those
 colours. As in the base model's own answers, a colour belongs to a legend position, not to a class (white
-first, then a fixed sequence), so the mask can only be read through the legend. Config:
+first, then a fixed sequence of maximally distinct colours), so the mask can only be read through the legend. Config:
 `cocostuff_legend_seg2img.yaml` (legend + mask → photo, 50/50).
 
 Differences from CelebAMask-HQ, and why:

@@ -96,7 +96,8 @@ fi
 job_script='
 set -euo pipefail
 mode="$1"; config="$2"; shift 2
-code_dir="/data/code/${RUN}"
+# One checkout per job: jobs of the same run (e.g. two exports) would otherwise run git in one repo at once.
+code_dir="/data/code/${JOB}"
 if [ ! -d "${code_dir}/.git" ]; then
   git clone --quiet "${REPO_URL}" "${code_dir}"
 fi
@@ -175,6 +176,7 @@ cmd=(
   --large-shm
   --datasource "type=pvc,name=${project}"
   -e "RUN=${run}"
+  -e "JOB=${job_name}"
   -e "REPO_URL=${repo_url}"
   -e "COMMIT=${commit}"
   # Both names: the image sets them to its docker-compose mount (/models/...); training reads
