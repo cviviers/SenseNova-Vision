@@ -14,7 +14,9 @@ Modes:
     seg2img              colour-coded segmentation map -> photo
 
 Every sample is: input image (VAE + ViT, no loss) -> prompt (no loss) -> target image (loss), the
-same sequence as SegJSONLIterableDataset / EditJSONLIterableDataset.
+same sequence as SegJSONLIterableDataset / EditJSONLIterableDataset. A mode whose draw() returns an
+"answer" in info (e.g. COCO-Stuff's img2palette_legend colour legend) puts it as text with loss between
+the prompt and the target image, as SegJSONLIterableDataset does in think_mode.
 
 Sizing: the repository's ImageTransform resizes bicubically, which would blend class colours at
 mask boundaries. Each sample is therefore first brought to the exact size the transform will
@@ -94,6 +96,8 @@ class SegMultiTaskDataset(DistributedIterableDataset):
         sample = self.new_sample()
         sample = self._add_image(sample, source, need_loss=False, need_vae=True, need_vit=True)
         sample = self._add_text(sample, prompt, need_loss=False)
+        if info.get("answer"):
+            sample = self._add_text(sample, info["answer"], need_loss=True)
         sample = self._add_image(sample, target, need_loss=True, need_vae=False, need_vit=False)
         return sample, mode, prompt, info
 

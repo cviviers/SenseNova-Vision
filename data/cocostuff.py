@@ -22,6 +22,8 @@ Modes (one fixed prompt or template each; see the PROMPT constants below):
                          plus a few absent distractors); everything else black
     img2binseg           photo -> binary mask of one class (present with probability binary_present_prob)
     seg2img              full colour map -> photo (colour key of the classes present in the input map)
+    img2palette_legend   photo -> colour legend (text, CE loss) + map in those colours: the released model's
+                         own generic-segmentation format (see LEGEND_PROMPT)
 """
 
 import io
@@ -32,6 +34,7 @@ import zipfile
 import numpy as np
 from PIL import Image
 
+from .prompts import CAPTION_QUESTION_LIST, MASK_QUESTION_LIST
 from .seg_multitask import SegMultiTaskDataset
 
 UNUSED_IDS = (12, 26, 29, 30, 45, 66, 68, 69, 71, 83, 91)
@@ -127,6 +130,40 @@ def seg2img_prompt(label):
     return SEG2IMG_PROMPT_TEMPLATE.format(key=colour_key([int(c) for c in np.unique(label) if c]) or "no classes")
 
 
+# img2palette_legend: the released model's generic-segmentation format (paper Sec. 3; data/prompts.py, trained
+# there through SegJSONLIterableDataset with think_mode). The prompt lists every class as <p>name</p>; the answer
+# is a colour legend <p>name<color>(R, G, B)</color></p> of the classes present (text, with CE loss) followed by
+# a mask in those colours. As in the base model's own (greedy) answers on COCO, colours follow the legend
+# position, not the class: the largest class comes first and is white, then a fixed sequence in descending RGB
+# order. The mask's colours are therefore defined by the legend text, and the legend itself is fully
+# predictable from the image (no randomly drawn colours, whose digits the CE loss could never learn).
+def legend_name(cid):
+    """Class name as the base model writes it in a legend: 'sky-other' -> 'sky', 'wall-brick' -> 'wall brick'."""
+    return CLASS_NAMES[cid].replace("-other", "").replace("-stuff", "").replace("-", " ")
+
+
+LEGEND_PROMPT = (
+    MASK_QUESTION_LIST[0].format(categories=", ".join(f"<p>{legend_name(c)}</p>" for c in USED_IDS),
+                                 task_type="semantic")
+    + " " + CAPTION_QUESTION_LIST[0].format(task_type="semantic")
+)
+
+
+LEGEND_COLOURS = [(255, 255, 255)] + sorted((tuple(int(v) for v in PALETTE[c]) for c in USED_IDS), reverse=True)
+
+
+def legend_task(label):
+    """(None, LEGEND_PROMPT, mask in legend colours, {"answer": legend text, "classes": ids in legend order})."""
+    ids, counts = np.unique(label[label > 0], return_counts=True)
+    order = [int(c) for c in ids[np.argsort(-counts, kind="stable")]]
+    colours = LEGEND_COLOURS[: len(order)]
+    lut = np.zeros((256, 3), dtype=np.uint8)  # unlabeled stays black
+    for cid, rgb in zip(order, colours):
+        lut[cid] = rgb
+    legend = ", ".join(f"<p>{legend_name(c)}<color>({r}, {g}, {b})</color></p>" for c, (r, g, b) in zip(order, colours))
+    return None, LEGEND_PROMPT, Image.fromarray(lut[label]), {"answer": legend, "classes": order}
+
+
 def partial_prompt(class_ids):
     ids = sorted(class_ids)
     return PARTIAL_PROMPT_TEMPLATE.format(names=", ".join(phrase(c) for c in ids), key=colour_key(ids))
@@ -164,6 +201,8 @@ def sample_task(rng, label, mode, partial_present_range=(1, 8), partial_absent_m
         return None, binary_prompt(cid), binary_image(label, cid), {"class": cid, "present": cid in present}
     if mode == "seg2img":
         return palette_image(label), seg2img_prompt(label), None, {"classes": present}
+    if mode == "img2palette_legend":
+        return legend_task(label)
     raise ValueError(f"unknown mode {mode!r}")
 
 
@@ -223,6 +262,7 @@ class CocoStuffMultiTaskDataset(SegMultiTaskDataset):
         shuffle_seed: 0
     """
 
+    MODES = SegMultiTaskDataset.MODES + ("img2palette_legend",)
     DEFAULT_MODE_WEIGHTS = {"img2palette": 0.2, "img2palette_partial": 0.3, "img2binseg": 0.3, "seg2img": 0.2}
 
     def __init__(self, dataset_name, transform, tokenizer, vit_transform, data_dir_list, num_used_data,

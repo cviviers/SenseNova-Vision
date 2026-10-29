@@ -6,6 +6,9 @@
 #   bash scripts/eval_seg_tasks.sh <celebamask|cocostuff> <output_dir> [--limit N] [--adapter DIR] [...]
 #
 #   img2palette  photo -> palette map with the training prompt, mIoU   -> <output_dir>/img2palette/metrics.json
+#   img2legend   photo -> colour legend + mask, the released model's generic-segmentation format, decoded
+#                through the legend (cocostuff only; zero-shot baseline in the model's own format and the
+#                coco-lora-v4 evaluation), mIoU                        -> <output_dir>/img2legend/metrics.json
 #   img2binseg   photo -> one binary mask per class (celebamask only;
 #                inference/benchmark/batch_celebamask_segment.py), mIoU -> <output_dir>/img2binseg/metrics.json
 #   seg2img      palette map -> photo, photo rate / layout / FID / KID  -> <output_dir>/seg2img/metrics.json
@@ -13,14 +16,15 @@
 # Extra arguments go to every task (--adapter --model_path --split --limit --num_timesteps --cfg_text_scale
 # --seed); seg2img-only flags (--prompt training|regions, --seeds N, --num_samples N, --check_seeds K, --no_fid,
 # --no_roundtrip, --no_photo_check) go in SEG2IMG_ARGS. Zero-shot seg2img: --prompt regions --cfg_img_scale 1.2
-# (the training prompt's colour key makes the base model copy the map). All tasks resume. img2binseg and seg2img are sharded over all visible
+# (the training prompt's colour key makes the base model copy the map). All tasks resume. img2legend, img2binseg and seg2img are sharded over all visible
 # GPUs; img2palette uses the first one.
 # FID-50k on CelebAMask-HQ val (2993 maps, ~17 seeds each; photo check and round trip once per map):
 #   EVAL_TASKS=seg2img SEG2IMG_ARGS="--num_samples 50000 --check_seeds 1" \
 #     bash scripts/eval_seg_tasks.sh celebamask results/eval/base_celebamask_fid50k
 #
 # Environment (all optional):
-#   EVAL_TASKS                 comma list (default: img2palette,img2binseg,seg2img; cocostuff skips img2binseg)
+#   EVAL_TASKS                 comma list (default: img2palette,img2binseg,seg2img; cocostuff skips img2binseg,
+#                              celebamask skips img2legend)
 #   BINSEG_PROMPT              img2binseg prompt: native (released model's <p>class</p> format, default) or
 #                              training (the img2binseg prompt of the fine-tuning data)
 #   MODEL_PATH                 model dir (default: SENSENOVA_MODEL_DIR, else /models/SenseNova-Vision-7B-MoT)
@@ -64,6 +68,17 @@ for task in ${tasks//,/ }; do
     img2palette)
       python -m inference.benchmark.eval_seg_img2palette --dataset "${dataset}" --dataset_root "${root}" \
         --max_mem_per_gpu "${max_mem}" --output_dir "${out}/img2palette" "$@" ;;
+    img2legend)
+      if [ "${dataset}" != cocostuff ]; then
+        echo "skip img2legend: only implemented for cocostuff"
+        continue
+      fi
+      legend_cmd=(python -m inference.benchmark.eval_seg_img2palette --dataset "${dataset}" --dataset_root "${root}"
+        --format legend --max_mem_per_gpu "${max_mem}" --output_dir "${out}/img2legend" "$@")
+      if [ "${num_gpus}" -gt 1 ]; then
+        run_shards "${legend_cmd[@]}" --generate_only
+      fi
+      CUDA_VISIBLE_DEVICES=0 "${legend_cmd[@]}" ;;
     img2binseg)
       if [ "${dataset}" != celebamask ]; then
         echo "skip img2binseg: only implemented for celebamask"

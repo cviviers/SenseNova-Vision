@@ -112,6 +112,18 @@ class CocoStuffEval:
     def seg2img_region_prompt(self, label):
         return COCO_REGION_PROMPT + ", ".join(self.m.phrase(int(c)) for c in np.unique(label) if c) + "."
 
+    def legend_prompt(self):
+        return self.m.LEGEND_PROMPT
+
+    def legend_class_id(self, phrase):
+        """Class id of a legend phrase ('person-0', 'sky', 'wall-other-merged'), or None if it names no class."""
+        if not hasattr(self, "_legend_ids"):
+            self._legend_ids = {self.m.legend_name(c): c for c in self.m.USED_IDS}
+        base, _, idx = phrase.rpartition("-")
+        name = base if base and idx.isdigit() else phrase  # drop the instance number
+        name = name.lower().replace("-merged", "").replace("-other", "").replace("-stuff", "").replace("-", " ")
+        return self._legend_ids.get(" ".join(name.split()))
+
 
 DATASETS ={"celebamask": CelebAMaskEval, "cocostuff": CocoStuffEval}
 
@@ -191,6 +203,30 @@ def segment_to_palette(model, ds, photo, seed, params, transforms):
                          mode="dense_perception", noise_seed=seed, **params, **transforms).convert("RGB")
     label, off = palette_to_label(ds, raw, photo.size)
     return raw, label, off
+
+
+def segment_with_legend(model, ds, photo, seed, params, transforms, max_text_tokens=1024):
+    """Run the released model's generic-segmentation format (ds.legend_prompt(): colour legend text, then a mask in
+    those colours) and decode the mask through the legend. Returns (raw map, label map at the photo's size, info)
+    with info = {"text", "legend_entries", "unmatched": legend phrases that name no dataset class}."""
+    from utils.parsing_output import class_mask_from_raw_output
+    out = model.generate(contents=[{"type": "image", "value": photo}, {"type": "text", "value": ds.legend_prompt()}],
+                         mode="caption_generate", noise_seed=seed, return_intermediate_outputs=True,
+                         max_think_token_n=max_text_tokens, **params, **transforms)
+    text, raw = out.get("text") or "", out.get("image")
+    label = np.zeros(photo.size[::-1], dtype=np.uint8)
+    if raw is None:
+        return Image.new("RGB", photo.size), label, {"text": text, "legend_entries": 0, "unmatched": []}
+    raw = raw.convert("RGB")
+    parsed = class_mask_from_raw_output(raw.resize(photo.size, Image.NEAREST), text)
+    unmatched = []
+    for index, phrase in enumerate(parsed["gcg_phrases"]):
+        cid = ds.legend_class_id(phrase)
+        if cid is None:
+            unmatched.append(phrase)
+        else:
+            label[parsed["class_mask"] == index] = cid
+    return raw, label, {"text": text, "legend_entries": len(parsed["gcg_phrases"]), "unmatched": unmatched}
 
 
 def confusion(ds, gt, pred):
