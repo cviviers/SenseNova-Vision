@@ -140,6 +140,15 @@ independently with equal weight from the 24,183 train-split images; val/test sta
 | --- | --- | --- |
 | `img2palette` | face photo → official-palette segmentation map | `IMG2PALETTE_PROMPT`, starts "Task: face photo to segmentation map." — colour key of all 18 face classes |
 | `seg2img` | official-palette segmentation map → face photo | `seg2img_prompt(map)`, starts "Task: segmentation map to face photo." — colour key of the classes present in the input map |
+| `img2palette_legend` | face photo → colour legend (text) + map in those colours | `LEGEND_PROMPT` — the released model's own generic-segmentation prompt with the 18 face classes as `<p>name</p>` (201 tokens) |
+
+`img2palette_legend` is the released model's native format for semantic segmentation, trained as on
+COCO-Stuff ([`COCOSTUFF.md`](COCOSTUFF.md)). The answer is a legend
+`<p>face skin<color>(255, 255, 255)</color></p>, <p>hair<color>(0, 119, 255)</color></p>, …` of the face
+classes present, largest first, trained with the text (CE) loss, followed by the mask in those colours. A
+colour belongs to a legend position, not to a class, using the same fixed sequence as COCO-Stuff, so the mask
+can only be read through the legend. Background is not a listed class and stays black. Config:
+`celebamask_legend_seg2img.yaml` (legend + mask → photo, 50/50); evaluate with `EVAL_TASKS=img2legend`.
 
 ```bash
 docker exec sensenova-vision bash scripts/finetune_lora.sh \

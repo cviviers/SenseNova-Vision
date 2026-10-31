@@ -10,11 +10,11 @@ it against the ground truth.
               the full report of tools/evaluation/segment/evaluate_celebamask.py is added (F1, L/R merged).
 * cocostuff   mIoU over the 171 COCO-Stuff classes, unlabeled ground-truth pixels ignored (standard protocol).
 
---format legend (cocostuff) asks instead in the released model's own generic-segmentation format
-(data/cocostuff.py LEGEND_PROMPT, mode caption_generate): the model writes a colour legend
+--format legend asks instead in the released model's own generic-segmentation format
+(LEGEND_PROMPT in data/celebamask.py / data/cocostuff.py, mode caption_generate): the model writes a colour legend
 <p>class<color>(R, G, B)</color></p> and then a mask in those colours, decoded through the legend. This is the
 zero-shot baseline in the model's native format, and the evaluation of LoRAs trained on img2palette_legend.
-log.jsonl then records the legend text, its number of entries and the phrases that name no COCO-Stuff class.
+log.jsonl then records the legend text, its number of entries and the phrases that name no dataset class.
 
 Outputs (resumable; existing pred/<key>.png are skipped):
     raw/<key>.png     generated map as produced

@@ -59,6 +59,18 @@ class CelebAMaskEval:
         from inference.benchmark.batch_celebamask_mask2face import make_prompt
         return make_prompt("celeb_dynamic", label)
 
+    def legend_prompt(self):
+        return self.m.LEGEND_PROMPT
+
+    def legend_class_id(self, phrase):
+        """Class id of a legend phrase ('left eye', 'earring-1', 'skin'), or None if it names no face class."""
+        if not hasattr(self, "_legend_ids"):
+            from inference.benchmark.batch_celebamask_segment import GENERIC_ALIASES
+            self._legend_ids = {**GENERIC_ALIASES, **{p: c for c, p in enumerate(self.m.PHRASES) if c}}
+        base, _, idx = phrase.rpartition("-")
+        name = base if base and idx.isdigit() else phrase  # drop the instance number
+        return self._legend_ids.get(" ".join(name.lower().replace("-", " ").split()))
+
 
 # Region-name seg2img prompt for COCO-Stuff, worded like celeb_dynamic (batch_celebamask_mask2face.py).
 COCO_REGION_PROMPT = (

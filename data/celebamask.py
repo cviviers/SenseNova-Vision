@@ -13,6 +13,8 @@ Modes (each with one fixed, explicit prompt or template):
                          every other pixel black; the subset is the only variable in the prompt
     img2binseg           photo -> binary mask (white on black) of one class; absent classes -> all black
     seg2img              official-palette segmentation map -> photo
+    img2palette_legend   photo -> colour legend (text, CE loss) + map in those colours: the released model's
+                         own generic-segmentation format (see LEGEND_PROMPT)
 
 CelebAMaskMultiTaskDataset draws a mode per sample (``mode_weights``), and for the
 partial / binary modes a random subset / class, so every epoch sees new combinations.
@@ -25,6 +27,8 @@ import os
 import numpy as np
 from PIL import Image
 
+from .cocostuff import LEGEND_COLOURS
+from .prompts import CAPTION_QUESTION_LIST, MASK_QUESTION_LIST
 from .seg_multitask import SegMultiTaskDataset
 
 # ----------------------------------------------------------------------------- definitions
@@ -89,6 +93,30 @@ SEG2IMG_PROMPT_TEMPLATE = (
     "features, and coherent photographic lighting, like an authentic, unretouched CelebA face photograph. Do "
     "not retain any segmentation colours."
 )
+
+
+# img2palette_legend: the released model's own generic-segmentation prompt with the 18 face classes, trained as
+# in data/cocostuff.py (see the comment there): the answer is a colour legend <p>class<color>(R, G, B)</color></p>
+# of the face classes present, largest first, followed by a mask in those colours. Colours belong to the legend
+# position (the same fixed sequence as COCO-Stuff), so the mask can only be read through the legend. Background
+# is not a listed class and stays black. Also the zero-shot baseline in the model's native format.
+LEGEND_PROMPT = (
+    MASK_QUESTION_LIST[0].format(categories=", ".join(f"<p>{PHRASES[c]}</p>" for c in FACE_CLASS_IDS),
+                                 task_type="semantic")
+    + " " + CAPTION_QUESTION_LIST[0].format(task_type="semantic")
+)
+
+
+def legend_task(label):
+    """(None, LEGEND_PROMPT, mask in legend colours, {"answer": legend text, "classes": ids in legend order})."""
+    ids, counts = np.unique(label[label > 0], return_counts=True)
+    order = [int(c) for c in ids[np.argsort(-counts, kind="stable")]]
+    colours = LEGEND_COLOURS[: len(order)]
+    lut = np.zeros((256, 3), dtype=np.uint8)  # background stays black
+    for cid, rgb in zip(order, colours):
+        lut[cid] = rgb
+    legend = ", ".join(f"<p>{PHRASES[c]}<color>({r}, {g}, {b})</color></p>" for c, (r, g, b) in zip(order, colours))
+    return None, LEGEND_PROMPT, Image.fromarray(lut[label]), {"answer": legend, "classes": order}
 
 
 def seg2img_prompt(label):
@@ -166,6 +194,8 @@ def sample_task(rng, label, mode, partial_size_range=(1, 17), binary_present_pro
         return None, binary_prompt(cid), binary_image(label, cid), {"class": cid, "present": cid in present}
     if mode == "seg2img":
         return palette_image(label), seg2img_prompt(label), None, {"classes": present}
+    if mode == "img2palette_legend":
+        return legend_task(label)
     raise ValueError(f"unknown mode {mode!r}")
 
 
@@ -180,6 +210,8 @@ class CelebAMaskMultiTaskDataset(SegMultiTaskDataset):
         binary_present_prob: 0.8                      img2binseg: share of requests for a present class
         shuffle_seed: 0
     """
+
+    MODES = SegMultiTaskDataset.MODES + ("img2palette_legend",)
 
     def __init__(self, dataset_name, transform, tokenizer, vit_transform, data_dir_list, num_used_data,
                  local_rank=0, world_size=1, num_workers=8, data_status=None, split="train", mode_weights=None,
