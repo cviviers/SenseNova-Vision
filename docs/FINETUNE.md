@@ -15,6 +15,8 @@ target images, CE on target text) with the same conditioning dropout, and log th
 | Checkpoint | `adapter_model.safetensors` (~320 MB) | FP32 `model.safetensors` + `ema.safetensors` (~58 GB each) + sharded optimizer |
 | For evaluation | pass `--adapter <dir>` (applied in memory) | `tools/export_full_checkpoint.py` → model dir, pass `--model_path <dir>` |
 
+The `symm` mode trains segmentation and synthesis as one flow instead of two modes: see [`SYMMETRIC.md`](SYMMETRIC.md).
+
 ## LoRA
 
 ```bash

@@ -45,12 +45,19 @@ def main():
     missing, extra = sorted(base_keys - set(state)), sorted(set(state) - base_keys)
     if missing:
         raise SystemExit(f"checkpoint lacks {len(missing)} base weights, e.g. {missing[:5]}")
+    os.makedirs(args.output_dir, exist_ok=True)
+    # The symmetric flow's stream identity has no place in the base checkpoint: kept beside it, not dropped.
+    symm = {key[len("symm_embedding."):]: state.pop(key).float() for key in list(state)
+            if key.startswith("symm_embedding.")}
+    if symm:
+        save_file(symm, os.path.join(args.output_dir, "symm_embedding.safetensors"))
+        print(f"[export] stream identity -> {args.output_dir}/symm_embedding.safetensors")
+    extra = [key for key in extra if key in state]
     if extra:
         print(f"[export] dropping {len(extra)} keys not in the base checkpoint, e.g. {extra[:5]}")
         for key in extra:
             del state[key]
 
-    os.makedirs(args.output_dir, exist_ok=True)
     for name in os.listdir(args.base_model_path):
         path = os.path.join(args.base_model_path, name)
         if os.path.isfile(path) and name != "ema.safetensors":

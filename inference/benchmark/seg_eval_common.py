@@ -31,6 +31,7 @@ class CelebAMaskEval:
     # Training transforms (data/configs/celebamask_hq/celebamask_img2palette_seg2img.yaml).
     vae_transform = ImageTransform(512, 512, 16)
     vit_transform = ImageTransform(518, 224, 14)
+    symm_beta = 10.0  # map dequantization of the symm configs
 
     def __init__(self, root):
         from data import celebamask as m
@@ -49,6 +50,9 @@ class CelebAMaskEval:
 
     def img2palette_prompt(self):
         return self.m.IMG2PALETTE_PROMPT
+
+    def symm_prompt(self):
+        return self.m.SYMM_PROMPT
 
     def seg2img_prompt(self, label):
         return self.m.seg2img_prompt(label)
@@ -89,6 +93,7 @@ class CocoStuffEval:
     # Training transforms (data/configs/cocostuff/cocostuff_img2palette_seg2img.yaml).
     vae_transform = ImageTransform(512, 256, 16)
     vit_transform = ImageTransform(518, 224, 14)
+    symm_beta = 6.0  # map dequantization of the symm configs
 
     def __init__(self, root):
         from data import cocostuff as m
@@ -118,6 +123,9 @@ class CocoStuffEval:
     def img2palette_prompt(self):
         return self.m.IMG2PALETTE_PROMPT
 
+    def symm_prompt(self):
+        return self.m.SYMM_PROMPT
+
     def seg2img_prompt(self, label):
         return self.m.seg2img_prompt(label)
 
@@ -146,6 +154,9 @@ def get_dataset(args):
 
 
 # ----------------------------------------------------------------------------- model
+SYMM_EMBEDDING_FILE = "symm_embedding.safetensors"
+
+
 def add_model_args(parser):
     parser.add_argument("--dataset", required=True, choices=list(DATASETS))
     parser.add_argument("--dataset_root", default=None, help="Defaults per dataset (container paths).")
@@ -159,6 +170,16 @@ def add_model_args(parser):
     parser.add_argument("--cfg_text_scale", type=float, default=None)
     parser.add_argument("--cfg_img_scale", type=float, default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--symm", action="store_true", help="Model trained with the symmetric flow (mode symm).")
+    parser.add_argument("--symm_seg_steps", type=int, default=1, help="--symm: segmentation steps.")
+    parser.add_argument("--symm_gen_steps", type=int, default=25, help="--symm: synthesis steps.")
+    parser.add_argument("--symm_no_vit", action="store_true", help="--symm: segment without the photo's ViT prefix.")
+    parser.add_argument("--symm_beta", type=float, default=None,
+                        help="--symm: map dequantization in synthesis, 0-255 scale (default: as in training).")
+    parser.add_argument("--symm_recompute_known", action="store_true",
+                        help="--symm: compute the known stream at every step instead of integrating it.")
+    parser.add_argument("--decoder", default=None,
+                        help="--symm or one-step eval: segmentation decoder checkpoint (train/train_seg_decoder.py).")
 
 
 def generation_params(args, ds):
@@ -185,6 +206,9 @@ def apply_lora_inplace(bagel, adapter_dir):
         delta = scale * (adapter[key.replace(".lora_A.", ".lora_B.")].float() @ adapter[key].float())
         weight.add_(delta.to(weight.device, weight.dtype))
         merged += 1
+    symm = {k[len("symm_embedding."):]: v for k, v in adapter.items() if k.startswith("symm_embedding.")}
+    if symm:
+        bagel.enable_symm_embedding(symm)
     print(f"[eval] applied {merged} LoRA modules from {adapter_dir} (scale={scale}, step={cfg.get('step')})")
     return cfg
 
@@ -194,6 +218,9 @@ def load_model(args):
     info = {"model_path": args.model_path, "adapter": args.adapter}
     if args.adapter:
         info["adapter_config"] = apply_lora_inplace(model.model, args.adapter)
+    symm_path = os.path.join(args.model_path, SYMM_EMBEDDING_FILE)  # written by tools/export_full_checkpoint.py
+    if os.path.exists(symm_path):
+        model.model.enable_symm_embedding(load_file(symm_path))
     return model, info
 
 
@@ -215,6 +242,51 @@ def segment_to_palette(model, ds, photo, seed, params, transforms):
                          mode="dense_perception", noise_seed=seed, **params, **transforms).convert("RGB")
     label, off = palette_to_label(ds, raw, photo.size)
     return raw, label, off
+
+
+def symm_flow(model, ds, args):
+    """SymmetricFlow on a loaded model, with the dataset's training transforms and the decoder if one is given."""
+    from inference.symmetric import SymmetricFlow
+
+    flow = SymmetricFlow(model, ds.vae_transform, ds.vit_transform)
+    flow.decoder = None
+    if getattr(args, "decoder", None):
+        from modeling.seg_decoder import load_seg_decoder
+        flow.decoder = load_seg_decoder(args.decoder, flow.device)
+    return flow
+
+
+def segment_symm(flow, ds, photo, seed, args):
+    """Segment through SymmetricFlow: returns (raw map, label map at the photo's size, off-palette share).
+
+    With --symm this is the symmetric flow. Without it (--decoder on a model trained on img2palette) it is the
+    one-step conditional estimate, the control for the symmetric flow."""
+    kwargs = dict(seed=seed, num_steps=args.symm_seg_steps, use_vit=not args.symm_no_vit,
+                  recompute_known=args.symm_recompute_known)
+    if flow.decoder is None:
+        raw = flow.segment(photo, ds.symm_prompt(), **kwargs).convert("RGB")
+        label, off = palette_to_label(ds, raw, photo.size)
+        return raw, label, off
+    if args.symm:
+        latent, shape = flow.segment_latent(photo, ds.symm_prompt(), **kwargs)
+    else:
+        latent, shape = flow.conditional_latent(photo, ds.img2palette_prompt(), seed)
+    label = decode_label(flow, ds, latent, shape, photo.size)
+    return Image.fromarray(ds.palette[label]), label, 0.0
+
+
+def decode_label(flow, ds, latent, shape, size):
+    """Class ids from latent tokens through the segmentation decoder, at PIL size (W, H)."""
+    from modeling.seg_decoder import unpack_latent
+
+    z = unpack_latent(flow.model, latent, shape)
+    with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
+        logits = flow.decoder(z.to(next(flow.decoder.parameters()).dtype))
+    logits = torch.nn.functional.interpolate(logits.float(), size=size[::-1], mode="bilinear", align_corners=False)
+    allowed = torch.zeros(ds.num_ids, dtype=torch.bool, device=logits.device)
+    allowed[ds.eval_ids if ds.ignore_unlabeled else list(range(ds.num_ids))] = True
+    logits[:, ~allowed] = float("-inf")
+    return logits.argmax(1)[0].cpu().numpy().astype(np.uint8)
 
 
 def segment_with_legend(model, ds, photo, seed, params, transforms, max_text_tokens=1024):

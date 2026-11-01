@@ -19,7 +19,7 @@ from data.data_utils import (
     patchify, 
 )
 from .qwen2_navit import NaiveCache
-from .modeling_utils import MLPconnector, TimestepEmbedder, PositionEmbedding
+from .modeling_utils import MLPconnector, PositionEmbedding, StreamEmbedding, TimestepEmbedder
 
 from tqdm import tqdm
 
@@ -98,6 +98,8 @@ class Bagel(PreTrainedModel):
         else:
             self.get_flattened_position_ids = get_flattened_position_ids_extrapolate
 
+        self.symm_embedding = None  # symmetric flow only, see enable_symm_embedding()
+
         self.config = config
         self._init_weights()
 
@@ -105,6 +107,20 @@ class Bagel(PreTrainedModel):
         if self.config.visual_gen:
             nn.init.constant_(self.llm2vae.weight, 0)
             nn.init.constant_(self.llm2vae.bias, 0)
+
+    def enable_symm_embedding(self, state_dict=None):
+        """Add the streams' learned identity (StreamEmbedding); state_dict restores trained values.
+
+        A child module added last, so that next(model.parameters()) still reports the model's dtype.
+        """
+        reference = self.vae2llm.weight
+        self.symm_embedding = StreamEmbedding(self.hidden_size)
+        if state_dict is not None:
+            self.symm_embedding.load_state_dict(state_dict)
+        self.symm_embedding.to(reference.device, torch.float32)
+
+    def _stream_embedding(self, stream_ids):
+        return 0 if stream_ids is None or self.symm_embedding is None else self.symm_embedding(stream_ids)
 
     def forward(
         self,
@@ -130,6 +146,7 @@ class Bagel(PreTrainedModel):
         packed_vae_token_indexes: Optional[torch.LongTensor] = None,
         packed_timesteps: Optional[torch.LongTensor] = None,
         mse_loss_indexes: Optional[torch.BoolTensor] = None,
+        packed_stream_ids: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -155,6 +172,7 @@ class Bagel(PreTrainedModel):
             packed_vae_token_indexes: 1-D int tensor, padded image token indexes in sequence.
             packed_timesteps: 1-D float tensor, flow timesteps. 0 indicates use clean image.
             mse_loss_indexes: 1-D bool tensor, where to compute mse loss.
+            packed_stream_ids: 1-D int tensor, symmetric-flow stream of each latent token (see _stream_embedding).
         """
         packed_text_embedding = self.language_model.model.embed_tokens(packed_text_ids)
         packed_sequence = packed_text_embedding.new_zeros(size=(sequence_length, self.hidden_size))
@@ -238,11 +256,12 @@ class Bagel(PreTrainedModel):
             packed_timestep_embeds = self.time_embedder(packed_timesteps)
             latent_token_pos_emb = self.latent_pos_embed(packed_latent_position_ids)
             packed_latent = self.vae2llm(packed_latent) + packed_timestep_embeds + latent_token_pos_emb
+            packed_latent = packed_latent + self._stream_embedding(packed_stream_ids)
 
             if packed_vae_token_indexes is None:
                 # dummy for umm FSDP
                 packed_vae_token_indexes = packed_text_indexes.new_ones(size=[0])
-            packed_sequence[packed_vae_token_indexes] = packed_latent
+            packed_sequence[packed_vae_token_indexes] = packed_latent.to(packed_sequence.dtype)
 
         extra_inputs = {}
         if self.use_moe:
@@ -795,6 +814,69 @@ class Bagel(PreTrainedModel):
         return unpacked_latent
 
     @torch.no_grad
+    def generate_symmetric(
+        self,
+        known_latent: torch.Tensor,
+        created_noise: torch.Tensor,
+        direction: str,
+        packed_text_ids: torch.LongTensor,
+        packed_text_indexes: torch.LongTensor,
+        packed_vae_position_ids: torch.LongTensor,
+        packed_vae_token_indexes: torch.LongTensor,
+        packed_seqlens: torch.IntTensor,
+        packed_position_ids: torch.LongTensor,
+        packed_indexes: torch.LongTensor,
+        past_key_values: NaiveCache,
+        key_values_lens: torch.IntTensor,
+        packed_key_value_indexes: torch.LongTensor,
+        num_steps: int = 1,
+        known_noise: Optional[torch.Tensor] = None,
+    ):
+        """Euler integration of the symmetric flow; returns the created stream's latent tokens.
+
+        Both streams sit in one query, photo first and map second, with one shared t: the photo's noise level is t
+        and the map's 1 - t, and the model predicts noise - data for each. `direction` is "segment" (t from 0 to 1:
+        the photo is known, the map is created) or "synthesize" (t from 1 to 0: the map is known, the photo is
+        created). With known_noise, the known stream is computed from its data and that noise at every step instead
+        of being integrated.
+        """
+        if direction not in ("segment", "synthesize"):
+            raise ValueError(f"unknown direction {direction!r}")
+        segment = direction == "segment"
+        num_tokens = known_latent.shape[0]
+        device = known_latent.device
+        image, mask = (known_latent, created_noise) if segment else (created_noise, known_latent)
+        grid = torch.linspace(0.0, 1.0, num_steps + 1) if segment else torch.linspace(1.0, 0.0, num_steps + 1)
+        grid = grid.tolist()
+        stream_ids = torch.cat([torch.full((num_tokens,), 1), torch.full((num_tokens,), 2)]).to(device)
+        for t, t_next in zip(grid[:-1], grid[1:]):
+            noise_level = torch.cat([torch.full((num_tokens,), t), torch.full((num_tokens,), 1.0 - t)]).to(device)
+            velocity = self._forward_flow(
+                x_t=torch.cat([image, mask], dim=0),
+                timestep=noise_level,
+                packed_vae_token_indexes=packed_vae_token_indexes,
+                packed_vae_position_ids=packed_vae_position_ids,
+                packed_text_ids=packed_text_ids,
+                packed_text_indexes=packed_text_indexes,
+                packed_position_ids=packed_position_ids,
+                packed_indexes=packed_indexes,
+                packed_seqlens=packed_seqlens,
+                key_values_lens=key_values_lens,
+                past_key_values=past_key_values,
+                packed_key_value_indexes=packed_key_value_indexes,
+                per_token_timesteps=True,
+                packed_stream_ids=stream_ids,
+            ).to(image.dtype)
+            image = image + velocity[:num_tokens] * (t_next - t)  # noise level moves by +dt ...
+            mask = mask - velocity[num_tokens:] * (t_next - t)    # ... and by -dt on the map's clock
+            if known_noise is not None:
+                if segment:
+                    image = (1.0 - t_next) * known_latent + t_next * known_noise
+                else:
+                    mask = t_next * known_latent + (1.0 - t_next) * known_noise
+        return mask if segment else image
+
+    @torch.no_grad
     def _forward_flow(
         self,
         x_t: torch.Tensor,
@@ -826,15 +908,19 @@ class Bagel(PreTrainedModel):
         cfg_img_past_key_values: Optional[NaiveCache] = None,
         cfg_img_packed_key_value_indexes: Optional[torch.LongTensor] = None,
         cfg_type: str = "parallel",
+        # Symmetric flow: the two streams of one query have different noise levels and identities.
+        per_token_timesteps: bool = False,
+        packed_stream_ids: Optional[torch.LongTensor] = None,
     ):
         packed_text_embedding = self.language_model.model.embed_tokens(packed_text_ids)
         packed_sequence = packed_text_embedding.new_zeros((sum(packed_seqlens), self.hidden_size))
         packed_sequence[packed_text_indexes] = packed_text_embedding
 
-        assert timestep.unique().shape[0] == 1
+        assert per_token_timesteps or timestep.unique().shape[0] == 1
         packed_pos_embed = self.latent_pos_embed(packed_vae_position_ids)
         packed_timestep_embeds = self.time_embedder(timestep)
         x_t = self.vae2llm(x_t) + packed_timestep_embeds + packed_pos_embed
+        x_t = x_t + self._stream_embedding(packed_stream_ids)
         if x_t.dtype != packed_sequence.dtype:
             x_t = x_t.to(packed_sequence.dtype)
         packed_sequence[packed_vae_token_indexes] = x_t

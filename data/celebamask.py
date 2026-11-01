@@ -73,6 +73,13 @@ IMG2PALETTE_PROMPT = (
     f"{colour_key()}; background is black (0, 0, 0). Use flat colours only, with no shading or texture."
 )
 
+# symm: one direction-free prompt that names both images, so the same text serves both ends of the flow.
+SYMM_PROMPT = (
+    "Two images of the same face. The first image is a realistic, natural human portrait photograph. The second "
+    f"image is its CelebAMask-HQ semantic segmentation map in flat colours. The colours in the map mean: {colour_key()}; "
+    "background is black (0, 0, 0)."
+)
+
 PARTIAL_PROMPT_TEMPLATE = (
     "Segment only these CelebAMask-HQ classes in this face photograph: {names}. Colour them with exactly these "
     "colours: {key}. Colour every other pixel black (0, 0, 0), including all other face parts and the "
@@ -196,6 +203,8 @@ def sample_task(rng, label, mode, partial_size_range=(1, 17), binary_present_pro
         return palette_image(label), seg2img_prompt(label), None, {"classes": present}
     if mode == "img2palette_legend":
         return legend_task(label)
+    if mode == "symm":
+        return None, SYMM_PROMPT, palette_image(label), {}
     raise ValueError(f"unknown mode {mode!r}")
 
 
@@ -209,6 +218,9 @@ class CelebAMaskMultiTaskDataset(SegMultiTaskDataset):
         partial_size_range: [1, 17]                   classes per partial request (any subset of the 18)
         binary_present_prob: 0.8                      img2binseg: share of requests for a present class
         shuffle_seed: 0
+        symm_beta: 10                                 symm: map dequantization, 0-255 scale
+        symm_vit_prob: 0.5                            symm: share of samples with the photo's ViT prefix
+        symm_endpoint_prob: 0.2                       symm: share of samples at t = 0 or 1 instead of uniform t
     """
 
     MODES = SegMultiTaskDataset.MODES + ("img2palette_legend",)
@@ -216,9 +228,9 @@ class CelebAMaskMultiTaskDataset(SegMultiTaskDataset):
     def __init__(self, dataset_name, transform, tokenizer, vit_transform, data_dir_list, num_used_data,
                  local_rank=0, world_size=1, num_workers=8, data_status=None, split="train", mode_weights=None,
                  partial_size_range=(1, 17), binary_present_prob=0.8, shuffle_lines=True, shuffle_seed=0,
-                 task_prompt=None):
+                 task_prompt=None, symm_beta=0.0, symm_vit_prob=0.5, symm_endpoint_prob=0.2):
         super().__init__(dataset_name, transform, tokenizer, vit_transform, local_rank, world_size, num_workers,
-                         data_status, mode_weights, shuffle_seed)
+                         data_status, mode_weights, shuffle_seed, symm_beta, symm_vit_prob, symm_endpoint_prob)
         self.split = split
         self.partial_size_range = tuple(partial_size_range)
         self.binary_present_prob = binary_present_prob

@@ -1,0 +1,29 @@
+# Copyright 2026 SenseTime Group Inc. and/or its affiliates.
+# COCO-Stuff (171 classes): photo and colour-coded map on one symmetric flow (docs/SYMMETRIC.md). Every sample holds both, with one
+# shared t, so there is no direction to sample. Needs --timestep_shift 1.0.
+#   bash scripts/finetune_lora.sh data/configs/cocostuff/cocostuff_symm.yaml --output_dir results/symm/<run> \
+#       --timestep_shift 1.0 --init_adapter <adapter dir> --quant nf4
+
+cocostuff_multitask:
+  datasets:
+    cocostuff_train2017:
+      data_dir:
+        images: /datasets/segmentation/train2017.zip
+        labels: /datasets/segmentation/stuffthingmaps_trainval2017.zip
+        split: train2017
+      num_total_samples: 118287
+  mode_weights:
+    symm: 1.0
+  symm_beta: 6             # map dequantization, 0-255 scale
+  symm_vit_prob: 0.5       # share of samples with the photo's ViT tokens as a clean prefix; 0 = pure symmetric flow
+  symm_endpoint_prob: 0.2  # share of samples at t = 0 or 1, where both tasks start; the rest is uniform
+  image_transform_args:           # COCO images are ~640x480 -> e.g. 512x384 (768 latent tokens)
+    image_stride: 16
+    max_image_size: 512
+    min_image_size: 256
+  vit_image_transform_args:
+    image_stride: 14
+    max_image_size: 518
+    min_image_size: 224
+  shuffle_seed: 0
+  weight: 1.0

@@ -54,6 +54,10 @@ def main():
         if name != "ema.safetensors" and os.path.isfile(src):
             shutil.copy2(src, os.path.join(args.output_dir, name))
     save_file(state_dict, os.path.join(args.output_dir, "ema.safetensors"))
+    # The symmetric flow's stream identity has no place in the base checkpoint: kept beside it.
+    symm = {k[len("symm_embedding."):]: v for k, v in adapter.items() if k.startswith("symm_embedding.")}
+    if symm:
+        save_file(symm, os.path.join(args.output_dir, "symm_embedding.safetensors"))
     shutil.copy2(os.path.join(args.adapter, "adapter_config.json"), os.path.join(args.output_dir, "merged_adapter_config.json"))
     print(f"Wrote merged model to {args.output_dir}")
 

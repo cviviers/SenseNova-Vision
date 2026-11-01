@@ -25,6 +25,9 @@ Outputs (resumable; existing pred/<key>.png are skipped):
     python -m inference.benchmark.eval_seg_img2palette --dataset cocostuff \\
         --adapter results/cocostuff_lora_i2p_s2i/final --output_dir results/cocostuff_eval/final/img2palette --limit 500
 
+--symm evaluates a model trained with the symmetric flow (docs/SYMMETRIC.md): one step from t = 0 by default, without
+guidance; --decoder reads the map through a segmentation decoder instead of the VAE.
+
 --num_shards/--shard_id --generate_only split the images over GPUs; a final run without them computes the metrics
 from the files (scripts/eval_seg_tasks.sh does this for img2legend on all visible GPUs).
 """
@@ -46,9 +49,11 @@ from inference.benchmark.seg_eval_common import (
     generation_params,
     get_dataset,
     load_model,
+    segment_symm,
     segment_to_palette,
     segment_with_legend,
     summarize,
+    symm_flow,
 )
 
 
@@ -80,6 +85,8 @@ def main():
     if todo:
         model, info = load_model(args)
         params, transforms = generation_params(args, ds)
+        use_flow = args.symm or args.decoder  # --decoder alone: the one-step conditional control
+        flow = symm_flow(model, ds, args) if use_flow else None
         if args.shard_id == 0:
             with open(os.path.join(out, "config.json"), "w") as f:
                 json.dump({**vars(args), **info, "inference_overrides": params}, f, indent=2, default=str)
@@ -92,7 +99,8 @@ def main():
                 raw, label, rec = segment_with_legend(model, ds, photo, seed, params, transforms, args.max_text_tokens)
                 note = f"legend={rec['legend_entries']} unmatched={len(rec['unmatched'])}"
             else:
-                raw, label, off = segment_to_palette(model, ds, photo, seed, params, transforms)
+                raw, label, off = (segment_symm(flow, ds, photo, seed, args) if use_flow else
+                                   segment_to_palette(model, ds, photo, seed, params, transforms))
                 rec, note = {"off_palette": off}, f"off_palette={off:.3f}"
             raw.save(os.path.join(out, "raw", f"{key}.png"))
             Image.fromarray(label).save(os.path.join(out, "pred", f"{key}.png"))

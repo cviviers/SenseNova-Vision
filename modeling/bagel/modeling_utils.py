@@ -111,6 +111,24 @@ class TimestepEmbedder(nn.Module):
         return t_emb
 
 
+class StreamEmbedding(nn.Module):
+    """Learned identity of the symmetric flow's two streams: the photo is c + u and the map c - u.
+
+    A stream of pure noise has no content to tell what it should become, and the two streams share positions, so
+    without this the model copies the clean stream. c starts at zero and u small, so that the pretrained token
+    distribution is barely changed. Weights stay in FP32: BF16 would round their small updates away.
+    """
+    def __init__(self, hidden_size):
+        super().__init__()
+        self.center = nn.Parameter(torch.zeros(1, hidden_size))
+        self.delta = nn.Parameter(1e-3 * torch.randn(1, hidden_size))
+
+    def forward(self, stream_ids):
+        """stream_ids: 0 = no stream, 1 = photo, 2 = map."""
+        sign = (stream_ids == 1).float() - (stream_ids == 2).float()
+        return (stream_ids > 0).float()[:, None] * self.center + sign[:, None] * self.delta
+
+
 class MLPconnector(nn.Module):
     def __init__(self, in_dim: int, out_dim: int, hidden_act: str):
         super().__init__()

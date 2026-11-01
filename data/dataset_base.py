@@ -31,6 +31,23 @@ from .video_utils import FrameSampler
 
 LARGE_GROUPS = ['recon3d_sft', 'recon3d_jsonl_sft']
 
+# Symmetric flow: t stays inside (0, 1), because Bagel.forward computes the loss on tokens whose noise level
+# is above 0 and a stream at exactly 0 would drop rows that mse_loss_indexes keeps.
+SYMM_T_EPS = 1e-3
+
+
+def sample_symm_logit_t(endpoint_prob=0.0):
+    """t as a logit: Bagel.forward applies a sigmoid, so with --timestep_shift 1.0 this comes back as t.
+
+    Uniform, except that endpoint_prob of the samples sit at either end, half and half. Both tasks start there with
+    one stream of pure noise, which only the stream's identity can tell apart, and uniform t rarely lands there.
+    """
+    if np.random.random() < endpoint_prob:
+        t = SYMM_T_EPS if np.random.random() < 0.5 else 1 - SYMM_T_EPS
+    else:
+        t = np.random.uniform(SYMM_T_EPS, 1 - SYMM_T_EPS)
+    return float(np.log(t) - np.log1p(-t))
+
 class DataConfig:
     def __init__(
         self, 
@@ -208,6 +225,7 @@ class PackedDataset(torch.utils.data.IterableDataset):
             vae_latent_shapes           = list(), 
             packed_vae_token_indexes    = list(), 
             packed_timesteps            = list(), 
+            packed_stream_ids           = list(), 
             mse_loss_indexes            = list(),
             packed_vit_tokens           = list(), 
             vit_token_seqlens           = list(),
@@ -258,6 +276,8 @@ class PackedDataset(torch.utils.data.IterableDataset):
         if len(sequence_status['packed_timesteps']) > 0:
             data['packed_timesteps'] = torch.tensor(sequence_status['packed_timesteps'])
             data['mse_loss_indexes'] = torch.tensor(sequence_status['mse_loss_indexes'])
+            if any(sequence_status['packed_stream_ids']):
+                data['packed_stream_ids'] = torch.tensor(sequence_status['packed_stream_ids'])
 
         # if the model is required to perform text generation
         if len(sequence_status['packed_label_ids']) > 0:
@@ -373,7 +393,7 @@ class PackedDataset(torch.utils.data.IterableDataset):
 
         split_lens, attn_modes = list(), list()
         curr = sequence_status['curr']
-        curr_rope_id = 0
+        curr_rope_id = sample.get('rope_start', 0)
         sample_lens = 0
 
         for item in sequence_plan:
@@ -488,11 +508,18 @@ class PackedDataset(torch.utils.data.IterableDataset):
                 if item['loss'] == 1:
                     sequence_status['mse_loss_indexes'].extend(range(curr, curr + num_img_tokens))
                     if split_start:
-                        timestep = np.random.randn()
+                        if 'symm_stream' in item:
+                            timestep = sample_symm_logit_t(item.get('symm_endpoint_prob', 0.0))
+                        else:
+                            timestep = np.random.randn()
+                    elif item.get('symm_stream') == 'mask':
+                        timestep = -timestep  # sigmoid(-x) = 1 - sigmoid(x): the mask's noise level is 1 - t
                 else:
                     timestep = float('-inf')
 
                 sequence_status['packed_timesteps'].extend([timestep] * num_img_tokens)
+                stream_id = {'image': 1, 'mask': 2}.get(item.get('symm_stream'), 0)
+                sequence_status['packed_stream_ids'].extend([stream_id] * num_img_tokens)
                 curr += num_img_tokens
                 curr_split_len += num_img_tokens
 
@@ -513,7 +540,8 @@ class PackedDataset(torch.utils.data.IterableDataset):
                         attn_modes.append("noise")
                     else:
                         attn_modes.append("full")
-                sequence_status['packed_position_ids'].extend([curr_rope_id] * (num_img_tokens + 2))
+                rope_id = item.get('rope_id', curr_rope_id)
+                sequence_status['packed_position_ids'].extend([rope_id] * (num_img_tokens + 2))
                 if 'frame_delta' in item.keys():
                     curr_rope_id += item['frame_delta']
                 elif item['loss'] == 0:
@@ -572,6 +600,9 @@ class SimpleCustomBatch:
             self.packed_timesteps = data["packed_timesteps"]
             self.mse_loss_indexes = data["mse_loss_indexes"]
 
+        if "packed_stream_ids" in data.keys():
+            self.packed_stream_ids = data["packed_stream_ids"]
+
         if "packed_label_ids" in data.keys():
             self.packed_label_ids = data["packed_label_ids"]
             self.ce_loss_indexes = data["ce_loss_indexes"]
@@ -593,6 +624,9 @@ class SimpleCustomBatch:
         if hasattr(self, 'packed_timesteps'):
             self.packed_timesteps = self.packed_timesteps.pin_memory()
             self.mse_loss_indexes = self.mse_loss_indexes.pin_memory()
+
+        if hasattr(self, 'packed_stream_ids'):
+            self.packed_stream_ids = self.packed_stream_ids.pin_memory()
 
         if hasattr(self, 'packed_vit_tokens'):
             self.packed_vit_tokens = self.packed_vit_tokens.pin_memory()
@@ -623,6 +657,9 @@ class SimpleCustomBatch:
         if hasattr(self, 'packed_timesteps'):
             self.packed_timesteps = self.packed_timesteps.to(device)
             self.mse_loss_indexes = self.mse_loss_indexes.to(device)
+
+        if hasattr(self, 'packed_stream_ids'):
+            self.packed_stream_ids = self.packed_stream_ids.to(device)
 
         if hasattr(self, 'packed_vit_tokens'):
             self.packed_vit_tokens = self.packed_vit_tokens.to(device)
@@ -669,6 +706,9 @@ class SimpleCustomBatch:
         if hasattr(self, 'packed_timesteps'):
             data['packed_timesteps'] = self.packed_timesteps
             data['mse_loss_indexes'] = self.mse_loss_indexes
+
+        if hasattr(self, 'packed_stream_ids'):
+            data['packed_stream_ids'] = self.packed_stream_ids
 
         if hasattr(self, 'packed_label_ids'):
             data['packed_label_ids'] = self.packed_label_ids

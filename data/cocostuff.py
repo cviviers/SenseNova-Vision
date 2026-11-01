@@ -107,6 +107,13 @@ IMG2PALETTE_PROMPT = (
     f"{colour_key(USED_IDS)}; pixels that belong to none of these classes are black (0, 0, 0). Use flat "
     "colours only, with no shading or texture."
 )
+# symm: one direction-free prompt that names both images. It carries no colour key: the ~2,800-token key would be
+# most of a sample, and the closed palette is learned in fine-tuning.
+SYMM_PROMPT = (
+    "Two images of the same scene. The first image is a realistic, natural photograph. The second image is its "
+    "COCO-Stuff semantic segmentation map in flat colours, with each class always drawn in the same fixed colour; "
+    "black (0, 0, 0) marks unlabeled regions."
+)
 PARTIAL_PROMPT_TEMPLATE = (
     "Segment only these COCO-Stuff classes in this photograph: {names}. Colour them with exactly these colours: "
     "{key}. Colour every other pixel black (0, 0, 0), including all other classes and unlabeled regions. Use flat "
@@ -204,6 +211,8 @@ def sample_task(rng, label, mode, partial_present_range=(1, 8), partial_absent_m
         return palette_image(label), seg2img_prompt(label), None, {"classes": present}
     if mode == "img2palette_legend":
         return legend_task(label)
+    if mode == "symm":
+        return None, SYMM_PROMPT, palette_image(label), {}
     raise ValueError(f"unknown mode {mode!r}")
 
 
@@ -261,6 +270,9 @@ class CocoStuffMultiTaskDataset(SegMultiTaskDataset):
         partial_absent_max: 2           absent distractor classes per partial request (0..max)
         binary_present_prob: 0.8
         shuffle_seed: 0
+        symm_beta: 6                    symm: map dequantization, 0-255 scale
+        symm_vit_prob: 0.5              symm: share of samples with the photo's ViT prefix
+        symm_endpoint_prob: 0.2         symm: share of samples at t = 0 or 1 instead of uniform t
     """
 
     MODES = SegMultiTaskDataset.MODES + ("img2palette_legend",)
@@ -269,9 +281,9 @@ class CocoStuffMultiTaskDataset(SegMultiTaskDataset):
     def __init__(self, dataset_name, transform, tokenizer, vit_transform, data_dir_list, num_used_data,
                  local_rank=0, world_size=1, num_workers=8, data_status=None, mode_weights=None,
                  partial_present_range=(1, 8), partial_absent_max=2, binary_present_prob=0.8, shuffle_lines=True,
-                 shuffle_seed=0, task_prompt=None):
+                 shuffle_seed=0, task_prompt=None, symm_beta=0.0, symm_vit_prob=0.5, symm_endpoint_prob=0.2):
         super().__init__(dataset_name, transform, tokenizer, vit_transform, local_rank, world_size, num_workers,
-                         data_status, mode_weights, shuffle_seed)
+                         data_status, mode_weights, shuffle_seed, symm_beta, symm_vit_prob, symm_endpoint_prob)
         self.partial_present_range = tuple(partial_present_range)
         self.partial_absent_max = partial_absent_max
         self.binary_present_prob = binary_present_prob

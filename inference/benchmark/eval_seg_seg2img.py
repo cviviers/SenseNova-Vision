@@ -18,6 +18,9 @@ generate a photo with the training prompt in edit mode, and measure
                images at the same size. FID is strongly biased below ~2k images: compare runs at equal N,
                or rely on KID for small sets.
 
+--symm evaluates a model trained with the symmetric flow (docs/SYMMETRIC.md): synthesis from t = 1 and segmentation from
+t = 0 with the same model, the round trip included.
+
 Large FID runs: --num_samples 50000 reuses every map with new noise seeds until 50k photos exist,
 --check_seeds 1 limits the photo check / round trip to one photo per map, and --num_shards/--shard_id
 --generate_only split the work over GPUs (scripts/eval_seg_tasks.sh does this for all visible GPUs).
@@ -51,8 +54,10 @@ from inference.benchmark.seg_eval_common import (
     generation_params,
     get_dataset,
     load_model,
+    segment_symm,
     segment_to_palette,
     summarize,
+    symm_flow,
 )
 
 
@@ -139,9 +144,25 @@ def main():
     if jobs or ceiling_todo:
         model, info = load_model(args)
         params, transforms = generation_params(args, ds)
+        flow = symm_flow(model, ds, args) if args.symm else None
         if args.shard_id == 0:
             with open(f"{out}/config.json", "w") as f:
                 json.dump({**vars(args), **info, "inference_overrides": params}, f, indent=2, default=str)
+
+    def segment(image, seed):
+        if args.symm:
+            return segment_symm(flow, ds, image, seed, args)
+        return segment_to_palette(model, ds, image, seed, {}, transforms)
+
+    def generate(label, seed):
+        palette_map = Image.fromarray(ds.palette[label])
+        if args.symm:
+            beta = ds.symm_beta if args.symm_beta is None else args.symm_beta
+            return flow.synthesize(palette_map, ds.symm_prompt(), seed=seed, num_steps=args.symm_gen_steps, beta=beta,
+                                   recompute_known=args.symm_recompute_known)
+        return model.generate(contents=[{"type": "image", "value": palette_map},
+                                        {"type": "text", "value": prompt_fn(label)}],
+                              mode="edit", noise_seed=seed, **params, **transforms)
 
     def save_png(image, path):  # atomic: shards share the directories and resume skips existing files
         image.save(path + ".tmp", format="PNG")
@@ -154,15 +175,12 @@ def main():
         if s == 0 and not os.path.exists(f"{out}/ref/{k}.png"):
             save_png(photo, f"{out}/ref/{k}.png")
         t0 = time.time()
-        gen = model.generate(contents=[{"type": "image", "value": Image.fromarray(ds.palette[label])},
-                                       {"type": "text", "value": prompt_fn(label)}],
-                             mode="edit", noise_seed=1000 * s + int(k) % 1_000_000, **params, **transforms)
-        gen = gen.convert("RGB").resize(photo.size, Image.BICUBIC)
+        gen = generate(label, 1000 * s + int(k) % 1_000_000).convert("RGB").resize(photo.size, Image.BICUBIC)
         rec = {"key": k, "seed": s, "seconds": round(time.time() - t0, 2)}
         if checked(s) and not args.no_photo_check:
             rec["is_photo"] = is_photo(model, ds, gen)
         if checked(s) and not args.no_roundtrip:
-            _, pred, off = segment_to_palette(model, ds, gen, args.seed + int(k) % 1_000_000, {}, transforms)
+            _, pred, off = segment(gen, args.seed + int(k) % 1_000_000)
             save_png(Image.fromarray(pred), f"{out}/reseg/{k}_s{s}.png")
             rec["roundtrip_off_palette"] = off
         save_png(gen, f"{out}/gen/{k}_s{s}.png")  # written last: marks the job done for resume
@@ -172,7 +190,7 @@ def main():
         print(f"[seg2img] {n}/{len(jobs)} {k} seed={s} {rec['seconds']:.1f}s eta={eta:.0f}min", flush=True)
 
     for n, k in enumerate(ceiling_todo, 1):
-        _, pred, _ = segment_to_palette(model, ds, ds.load(k)[0], args.seed + int(k) % 1_000_000, {}, transforms)
+        _, pred, _ = segment(ds.load(k)[0], args.seed + int(k) % 1_000_000)
         save_png(Image.fromarray(pred), f"{out}/ceiling/{k}.png")
         print(f"[seg2img] ceiling {n}/{len(ceiling_todo)} {k}", flush=True)
 

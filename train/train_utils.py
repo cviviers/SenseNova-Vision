@@ -64,6 +64,65 @@ def per_group_losses(loss_dict, data, groups):
         return out
 
 
+def symm_rows(data, groups):
+    """(stream, t) per mse row, or None without symm samples: stream is 1 = photo, 2 = map, 0 = another mode.
+
+    In a symm sample the photo stream's rows come first and the map's second, half and half. Rows follow the VAE
+    tokens that have a finite timestep (conditioning images are -inf and carry no loss).
+    """
+    import torch
+
+    index = data.get("mse_loss_indexes")
+    if index is None or "symm" not in groups:
+        return None
+    ends = torch.cumsum(torch.as_tensor(data["sample_lens"], device="cpu"), 0)
+    sample_ids = torch.searchsorted(ends, index.cpu(), right=True)
+    timesteps = data["packed_timesteps"].cpu()
+    noise_level = torch.sigmoid(timesteps[timesteps > float("-inf")])
+    stream = torch.zeros(len(index), dtype=torch.long)
+    for sid in sample_ids.unique().tolist():
+        if groups[sid] == "symm":
+            rows = (sample_ids == sid).nonzero().squeeze(1)
+            stream[rows[: len(rows) // 2]] = 1
+            stream[rows[len(rows) // 2 :]] = 2
+    return stream, torch.where(stream == 2, 1 - noise_level, noise_level)
+
+
+def symm_row_weights(data, groups, image_weight):
+    """Per-row weights of the mse loss that scale the photo stream of symm samples, or None if nothing changes."""
+    rows = symm_rows(data, groups)
+    if rows is None or image_weight == 1.0:
+        return None
+    weights = rows[0].new_ones(rows[0].shape, dtype=data["packed_timesteps"].dtype)
+    weights[rows[0] == 1] = image_weight
+    return weights.to(data["mse_loss_indexes"].device)
+
+
+def per_stream_losses(loss_dict, data, groups, bins=5):
+    """Symm losses per stream and t bin, as {"mask_t0.2": {"mse": (sum, count)}} for accumulate_groups().
+
+    The clean end of each stream has an irreducible floor near 1 (noise cannot be predicted from data) and t is
+    uniform, so a single loss number is not comparable with the other modes; read these curves instead.
+    """
+    import torch
+
+    rows = symm_rows(data, groups)
+    values = loss_dict.get("mse")
+    if rows is None or values is None or values.numel() == 0:
+        return {}
+    stream, t = rows
+    with torch.no_grad():
+        per_token = values.detach().float().mean(-1).cpu()
+        bin_ids = (t * bins).long().clamp(max=bins - 1)
+        out = {}
+        for stream_id, name in ((1, "image"), (2, "mask")):
+            for b in range(bins):
+                sel = (stream == stream_id) & (bin_ids == b)
+                if sel.any():
+                    out[f"{name}_t{b / bins:.1f}"] = {"mse": (float(per_token[sel].sum()), int(sel.sum()))}
+        return out
+
+
 def accumulate_groups(window, batch_groups):
     """Add per_group_losses() output into a running {group: {"mse": [sum, n], "ce": [sum, n], "samples": n}}."""
     for group, vals in batch_groups.items():

@@ -50,6 +50,7 @@ from transformers.optimization import get_cosine_schedule_with_warmup
 from data.data_utils import add_special_tokens
 from data.dataset_base import DataConfig, PackedDataset, collate_wrapper
 from data.dataset_info import register_inline_datasets
+from data.seg_multitask import uses_symm
 from modeling.autoencoder import load_ae
 from modeling.bagel import (
     Bagel,
@@ -62,7 +63,13 @@ from modeling.bagel import (
 from modeling.bagel.qwen2_navit import Qwen2MoTDecoderLayer
 from modeling.qwen2 import Qwen2Tokenizer
 from train.pretrain_unified_navit import _encode_padded_images_in_chunks
-from train.train_utils import accumulate_groups, per_group_losses, summarize_groups
+from train.train_utils import (
+    accumulate_groups,
+    per_group_losses,
+    per_stream_losses,
+    summarize_groups,
+    symm_row_weights,
+)
 
 CHECKPOINT_WRAPPER_PREFIX = "_checkpoint_wrapped_module."
 LAYER_PREFIX = r"language_model\.model\.layers\.\d+\."
@@ -101,7 +108,9 @@ class FinetuneArguments:
     max_grad_norm: float = field(default=1.0)
     ce_weight: float = field(default=0.25)
     mse_weight: float = field(default=1.0)
-    timestep_shift: float = field(default=4.0)
+    timestep_shift: float = field(default=4.0, metadata={"help": "Must be 1.0 for configs with the symm mode."})
+    symm_image_weight: float = field(default=0.5, metadata={"help": "Mode symm: weight of the photo stream's loss."})
+    symm_embedding: bool = field(default=True, metadata={"help": "Mode symm: train the streams' learned identity."})
     text_cond_dropout_prob: float = field(default=0.05)
     vit_cond_dropout_prob: float = field(default=0.1)
     vae_cond_dropout_prob: float = field(default=0.1)
@@ -123,6 +132,11 @@ class FinetuneArguments:
     resume: bool = field(
         default=True,
         metadata={"help": "Continue from the latest checkpoint-* in --output_dir (e.g. after preemption)."},
+    )
+    init_adapter: str = field(
+        default=None,
+        metadata={"help": "Start from the weights of this adapter directory, with a fresh optimizer and step count. "
+                          "Ignored when --output_dir already holds a checkpoint to resume."},
     )
 
 
@@ -265,6 +279,8 @@ def build_dataloader(args: FinetuneArguments, tokenizer, new_token_ids, vae_conf
 
     # Allow datasets to be declared inline instead of editing data/dataset_info.py.
     register_inline_datasets(dataset_meta)
+    if uses_symm(dataset_meta) and args.timestep_shift != 1.0:
+        raise ValueError("The symm mode needs --timestep_shift 1.0: any other shift breaks noise levels t and 1 - t.")
 
     dataset_config = DataConfig(grouped_datasets=dataset_meta)
     dataset_config.vit_patch_size = 14
@@ -302,7 +318,12 @@ def build_dataloader(args: FinetuneArguments, tokenizer, new_token_ids, vae_conf
     )
 
 
-def compute_loss(loss_dict: dict, args: FinetuneArguments):
+def use_symm_embedding(args: FinetuneArguments) -> bool:
+    with open(args.dataset_config_file) as f:
+        return args.symm_embedding and uses_symm(yaml.safe_load(f))
+
+
+def compute_loss(loss_dict: dict, args: FinetuneArguments, mse_row_weights=None):
     loss = 0.0
     logs = {}
     if loss_dict["has_ce"] and loss_dict["ce"].numel() > 0:
@@ -311,7 +332,8 @@ def compute_loss(loss_dict: dict, args: FinetuneArguments):
         logs["ce"] = ce.item()
     if loss_dict["has_mse"] and loss_dict["mse"].numel() > 0:
         mse = loss_dict["mse"].mean()
-        loss = loss + args.mse_weight * mse
+        weighted = mse if mse_row_weights is None else (loss_dict["mse"].mean(-1) * mse_row_weights).mean()
+        loss = loss + args.mse_weight * weighted
         logs["mse"] = mse.item()
     return loss, logs
 
@@ -338,6 +360,8 @@ def main():
     vae_model.to(device).eval().requires_grad_(False)
 
     adapter_config = inject_lora(model, args)
+    if use_symm_embedding(args):
+        model.enable_symm_embedding()  # trainable, and saved with the adapter
     # Keep the trainable LoRA weights (and so their AdamW states) in FP32: with a BF16 base they would
     # otherwise inherit BF16, whose ~3 significant digits round small updates away. Autocast still runs
     # the matmuls in BF16.
@@ -354,6 +378,14 @@ def main():
                                f"tensors); use a new --output_dir or --resume False")
         model.load_state_dict(adapter, strict=False)
         print(f"[finetune] resuming from {resume_dir} (step {start_step})")
+    elif args.init_adapter:
+        adapter = load_file(os.path.join(args.init_adapter, "adapter_model.safetensors"))
+        lora_names = {n for n, p in model.named_parameters() if p.requires_grad and "lora_" in n}
+        if {n for n in adapter if "lora_" in n} != lora_names:
+            raise RuntimeError(f"{args.init_adapter} does not match this LoRA setup ({len(adapter)} vs "
+                               f"{len(lora_names)} tensors)")
+        model.load_state_dict(adapter, strict=False)
+        print(f"[finetune] starting from the weights of {args.init_adapter}")
     apply_activation_checkpointing(
         model,
         checkpoint_wrapper_fn=functools.partial(checkpoint_wrapper, checkpoint_impl=CheckpointImpl.NO_REENTRANT),
@@ -406,7 +438,7 @@ def main():
                 with torch.no_grad(), torch.amp.autocast("cuda", enabled=False):
                     data["padded_latent"] = _encode_padded_images_in_chunks(vae_model, data.pop("padded_images"))
             loss_dict = model(**data)
-            loss, logs = compute_loss(loss_dict, args)
+            loss, logs = compute_loss(loss_dict, args, symm_row_weights(data, groups, args.symm_image_weight))
         if groups:
             batch_groups = per_group_losses(loss_dict, data, groups)
             total = sum(v["mse"][0] for v in batch_groups.values() if "mse" in v)
@@ -416,6 +448,7 @@ def main():
                       f"groups={groups} sample_lens={list(data['sample_lens'])} mse_rows={loss_dict['mse'].shape} "
                       f"mapped={count}", flush=True)
             accumulate_groups(window["groups"], batch_groups)
+            accumulate_groups(window["groups"], per_stream_losses(loss_dict, data, groups))
 
         (loss / args.gradient_accumulation_steps).backward()
         window["loss"].append(float(loss))

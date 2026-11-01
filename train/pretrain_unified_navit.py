@@ -30,12 +30,21 @@ from transformers.optimization import (
 from data.dataset_base import DataConfig, PackedDataset, collate_wrapper
 from data.dataset_info import register_inline_datasets
 from data.data_utils import add_special_tokens
+from data.seg_multitask import uses_symm
 from modeling.autoencoder import load_ae
 from modeling.bagel import (
     BagelConfig, Bagel, Qwen2Config, Qwen2ForCausalLM, SiglipVisionConfig, SiglipVisionModel
 )
 from modeling.qwen2 import Qwen2Tokenizer
-from train.train_utils import accumulate_groups, create_logger, get_latest_ckpt, per_group_losses, summarize_groups
+from train.train_utils import (
+    accumulate_groups,
+    create_logger,
+    get_latest_ckpt,
+    per_group_losses,
+    per_stream_losses,
+    summarize_groups,
+    symm_row_weights,
+)
 from train.fsdp_utils import (
     FSDPCheckpoint, FSDPConfig, grad_checkpoint_check_fn, fsdp_wrapper, 
     fsdp_ema_setup, fsdp_ema_update,
@@ -283,6 +292,10 @@ class TrainingArguments:
         default=1.0,
         metadata={"help": "Scaling factor for the image-reconstruction MSE loss term."}
     )
+    symm_image_weight: float = field(
+        default=0.5,
+        metadata={"help": "Mode symm: weight of the photo stream's loss."}
+    )
     ce_weight: float = field(
         default=1.0,
         metadata={"help": "Scaling factor for the language cross-entropy loss term."}
@@ -527,6 +540,10 @@ def main():
     if training_args.visual_und:
         model.vit_model.vision_model.embeddings.convert_conv2d_to_linear(vit_config)
 
+    with open(data_args.dataset_config_file, "r") as stream:
+        if uses_symm(yaml.safe_load(stream)):
+            model.enable_symm_embedding()  # before FSDP, so that it is wrapped and saved with the model
+
     # Setup tokenizer for model:
     tokenizer = Qwen2Tokenizer.from_pretrained(training_args.resume_from_hf if training_args.resume_from_hf else model_args.llm_path)
     tokenizer, new_token_ids, num_new_tokens = add_special_tokens(tokenizer)
@@ -611,6 +628,8 @@ def main():
     with open(data_args.dataset_config_file, "r") as stream:
         dataset_meta = yaml.safe_load(stream)
     register_inline_datasets(dataset_meta)  # groups may declare their data inline under `datasets:`
+    if uses_symm(dataset_meta) and training_args.timestep_shift != 1.0:
+        raise ValueError("The symm mode needs --timestep_shift 1.0: any other shift breaks noise levels t and 1 - t.")
 
     dataset_config = DataConfig(grouped_datasets=dataset_meta)
     
@@ -697,9 +716,12 @@ def main():
                 raise e
 
         # Per-mode losses, from the raw per-token losses before they are reduced below.
+        mse_row_weights = None
         if data_indexes:
             groups = [d.get("mode", d.get("dataset_name", "all")) for d in data_indexes]
             accumulate_groups(group_window, per_group_losses(loss_dict, data, groups))
+            accumulate_groups(group_window, per_stream_losses(loss_dict, data, groups))
+            mse_row_weights = symm_row_weights(data, groups, training_args.symm_image_weight)
         
         loss = 0
         ce = loss_dict["ce"]
@@ -730,7 +752,10 @@ def main():
                 assert mse is not None  # should be of size [0, k] even if current rank doesn't have mse
                 total_mse_tokens = torch.tensor(len(data.get('mse_loss_indexes', [])), device=device)
                 dist.all_reduce(total_mse_tokens, op=dist.ReduceOp.SUM)
-                mse = mse.mean(dim=-1).sum() * mse_group_size.item() / total_mse_tokens
+                mse = mse.mean(dim=-1)
+                if mse_row_weights is not None:
+                    mse = mse * mse_row_weights
+                mse = mse.sum() * mse_group_size.item() / total_mse_tokens
                 loss_dict["mse"] = mse.detach()
                 loss = loss + mse * training_args.mse_weight
             else:
