@@ -29,6 +29,7 @@ from inference.inferencer import InterleaveInferencer
 from inference.symmetric import SymmetricFlow
 from modeling.seg_decoder import SegDecoder, load_seg_decoder, unpack_latent
 from train.finetune_lora import build_model
+from train.irepa import IREPA, spatial_zscore
 from train.train_seg_decoder import segmentation_loss
 from train.train_utils import per_group_losses, per_stream_losses, summarize_groups, accumulate_groups, symm_row_weights
 
@@ -422,6 +423,63 @@ def check_guidance(flow):
     assert flow.synthesize(mask, PROMPT, seed=0, num_steps=2, legend=LEGEND, cfg_scale=2.0).size == (SIZE, SIZE)
 
 
+class StubTeacher(torch.nn.Module):
+    """Offline stand-in for DINOv2: pooled pixels through a fixed projection; counts its calls."""
+    dim = 8
+
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("proj", torch.randn(3, self.dim, generator=torch.Generator().manual_seed(0)))
+        self.calls = 0
+
+    def forward(self, image, grid):
+        self.calls += 1
+        pooled = torch.nn.functional.adaptive_avg_pool2d(image[None].float(), grid)[0]
+        return (pooled.permute(1, 2, 0).reshape(-1, 3) @ self.proj.to(image.device)).float()
+
+
+def check_irepa(model, packer, tokenizer):
+    """Hidden states after layer k at the latent tokens, one teacher pass per photo shared by both streams, the
+    spatial z-score, a finite loss, and gradients into the head and the layers below k."""
+    feat = torch.randn(64, 8) * 3 + 5
+    normed = spatial_zscore(feat, alpha=1.0)
+    assert torch.allclose(normed.mean(0), torch.zeros(8), atol=1e-4) and torch.allclose(normed.std(0), torch.ones(8), atol=1e-3)
+    assert torch.allclose(spatial_zscore(feat, alpha=0.6).std(0), torch.ones(8), atol=1e-3)
+
+    photo, mask = make_images()
+    samples = [make_dataset(tokenizer, 1.0).build_symm_sample(random.Random(0), photo, PROMPT, mask),
+               make_dataset(tokenizer, 0.0).build_symm_sample(random.Random(1), photo, PROMPT, mask, LEGEND)]
+    data = to_device(pack(packer, samples))
+    data.pop("ce_loss_weights", None)
+    images = data.pop("padded_images")
+    data["padded_latent"] = model.vae_for_test.encode(images.to(DEVICE, torch.bfloat16)).float()
+    layer = model.language_model.model.layers[0]
+    seen = {}
+    handle = layer.register_forward_hook(lambda module, inputs, output: seen.setdefault("out", output))
+    weight = layer.self_attn.q_proj_moe_gen.weight  # latent tokens' queries: the generation expert
+    weight.requires_grad_(True)
+    teacher = StubTeacher().to(DEVICE)
+    irepa = IREPA(model.hidden_size, teacher, model.latent_downsample).to(DEVICE)
+    model.train()
+    with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+        out = model(**data, irepa_layer=1)
+        num_tokens = (SIZE // 16) ** 2
+        assert out["irepa_hidden"].shape == (4 * num_tokens, model.hidden_size)
+        assert torch.equal(out["irepa_hidden"], seen["out"][data["packed_vae_token_indexes"]]), "layer-1 states"
+        loss, logs = irepa(out["irepa_hidden"], images.to(DEVICE), data["patchified_vae_latent_shapes"],
+                           data["packed_stream_ids"])
+    handle.remove()
+    assert teacher.calls == 2, "one teacher pass per photo, shared by its map stream"
+    assert torch.isfinite(loss) and 0 <= loss.item() <= 2 and set(logs) == {"irepa_cos_image", "irepa_cos_mask"}
+    loss.backward()
+    assert irepa.head.weight.grad is not None and irepa.head.weight.grad.abs().sum() > 0, "head gradient"
+    assert weight.grad is not None and weight.grad.abs().sum() > 0, "gradient into the layers below the capture"
+    weight.grad = None
+    weight.requires_grad_(False)
+    with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+        assert "irepa_hidden" not in model(**data), "no capture unless asked"
+
+
 def check_guards():
     assert uses_symm({"a": {"mode_weights": {"symm": 1.0}}})
     assert uses_symm({"a": {"mode_weights": {"symm_legend": 1.0, "seg2img": 0}}})
@@ -467,6 +525,8 @@ def main():
     print("text dropout ok: prompt and legend dropped together, map RoPE id after the prefix")
     check_legend_training_step(model, packer, tokenizer)
     print("legend training step ok: CE on the legend, rows of both symm modes")
+    check_irepa(model, packer, tokenizer)
+    print("iREPA ok: layer capture, one teacher pass per photo, z-score, loss, gradients")
     flow = make_flow(model, vae, tokenizer, new_token_ids)
     for use_vit in (False, True):
         print(f"parity ok, ViT {use_vit}: {check_parity(model, flow, packer, tokenizer, use_vit):.5f} relative difference")

@@ -1075,7 +1075,10 @@ class Qwen2Model(Qwen2PreTrainedModel):
         packed_position_ids: torch.Tensor,
         packed_und_token_indexes: Optional[torch.LongTensor] = None,
         packed_gen_token_indexes: Optional[torch.LongTensor] = None,
+        capture_layer: Optional[int] = None,
     ) -> torch.Tensor:
+        """With capture_layer = k, also returns the hidden states after the first k layers (representation
+        alignment): (final normed states, states after layer k)."""
 
         if self.config.freeze_und:
             packed_sequence[packed_und_token_indexes] = packed_sequence[
@@ -1098,7 +1101,8 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 packed_gen_token_indexes=packed_gen_token_indexes,
             )
 
-        for decoder_layer in self.layers:
+        captured = None
+        for index, decoder_layer in enumerate(self.layers):
             packed_sequence = decoder_layer(
                 packed_sequence=packed_sequence,
                 sample_lens=sample_lens,
@@ -1106,7 +1110,14 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 packed_position_embeddings=packed_position_embeddings,
                 **extra_inputs,
             )
+            if capture_layer == index + 1:
+                captured = packed_sequence
 
+        if capture_layer is not None:
+            return self._final_norm(packed_sequence, packed_und_token_indexes, packed_gen_token_indexes), captured
+        return self._final_norm(packed_sequence, packed_und_token_indexes, packed_gen_token_indexes)
+
+    def _final_norm(self, packed_sequence, packed_und_token_indexes, packed_gen_token_indexes):
         if self.use_moe:
             packed_sequence_ = torch.zeros_like(packed_sequence)
             packed_sequence_[packed_und_token_indexes] = self.norm(
@@ -1241,8 +1252,10 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
         packed_position_ids: torch.Tensor,
         packed_und_token_indexes: Optional[torch.LongTensor] = None,
         packed_gen_token_indexes: Optional[torch.LongTensor] = None,
+        capture_layer: Optional[int] = None,
     ) -> torch.Tensor:
 
+        extra = {} if capture_layer is None else {"capture_layer": capture_layer}
         outputs = self.model(
             packed_sequence=packed_sequence,
             sample_lens=sample_lens,
@@ -1250,6 +1263,7 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
             attention_mask=attention_mask,
             packed_und_token_indexes=packed_und_token_indexes,
             packed_gen_token_indexes=packed_gen_token_indexes,
+            **extra,
         )
         return outputs
 

@@ -62,6 +62,7 @@ from modeling.bagel import (
 )
 from modeling.bagel.qwen2_navit import Qwen2MoTDecoderLayer
 from modeling.qwen2 import Qwen2Tokenizer
+from train.irepa import IREPA, DinoTeacher
 from train.pretrain_unified_navit import _encode_padded_images_in_chunks
 from train.train_utils import (
     accumulate_groups,
@@ -111,6 +112,12 @@ class FinetuneArguments:
     timestep_shift: float = field(default=4.0, metadata={"help": "Must be 1.0 for configs with the symm mode."})
     symm_image_weight: float = field(default=0.5, metadata={"help": "Mode symm: weight of the photo stream's loss."})
     symm_embedding: bool = field(default=True, metadata={"help": "Mode symm: train the streams' learned identity."})
+    irepa_weight: float = field(
+        default=0.0,
+        metadata={"help": "Symm modes: weight of the iREPA alignment loss (train/irepa.py); 0 = off."})
+    irepa_layer: int = field(default=8, metadata={"help": "iREPA: align the hidden states after this many layers."})
+    irepa_teacher: str = field(default="facebook/dinov2-base", metadata={"help": "iREPA: frozen DINOv2 encoder."})
+    irepa_alpha: float = field(default=0.6, metadata={"help": "iREPA: share of the patch mean removed (z-score)."})
     text_cond_dropout_prob: float = field(default=0.05)
     vit_cond_dropout_prob: float = field(default=0.1)
     vae_cond_dropout_prob: float = field(default=0.1)
@@ -395,6 +402,17 @@ def main():
 
     trainable = [p for p in model.parameters() if p.requires_grad]
     num_trainable = sum(p.numel() for p in trainable)
+    irepa = None
+    if args.irepa_weight > 0:
+        # The head trains with the adapter but lives outside the model: adapters and exports stay unchanged.
+        with open(args.dataset_config_file) as f:
+            if not uses_symm(yaml.safe_load(f)):
+                raise ValueError("--irepa_weight applies to configs with a symm mode")
+        irepa = IREPA(model.hidden_size, DinoTeacher(args.irepa_teacher), model.latent_downsample,
+                      args.irepa_alpha).to(device)
+        trainable = trainable + list(irepa.head.parameters())
+        print(f"[finetune] iREPA: {args.irepa_teacher}, layer {args.irepa_layer}, weight {args.irepa_weight}, "
+              f"head {sum(p.numel() for p in irepa.head.parameters()) / 1e6:.1f}M parameters")
     print(
         f"[finetune] model ready in {time() - t0:.0f}s | quant={args.quant} experts={args.lora_experts} "
         f"trainable={num_trainable / 1e6:.1f}M | gpu mem={torch.cuda.memory_allocated() / 2**30:.1f}GiB"
@@ -405,6 +423,10 @@ def main():
     state_path = os.path.join(resume_dir, "training_state.pt") if resume_dir else None
     if state_path and os.path.exists(state_path):
         state = torch.load(state_path, map_location=device, weights_only=True)
+        if irepa is not None:
+            if "irepa_head" not in state:
+                raise RuntimeError(f"{state_path} has no iREPA head; resume with the run's own --irepa_weight")
+            irepa.head.load_state_dict(state["irepa_head"])
         optimizer.load_state_dict(state["optimizer"])
         scheduler.load_state_dict(state["scheduler"])
     elif resume_dir:
@@ -421,7 +443,7 @@ def main():
     loader = build_dataloader(args, tokenizer, new_token_ids, vae_config, start_step)
 
     step, micro_step = start_step, 0
-    window = {"loss": [], "ce": [], "mse": [], "tokens": 0, "groups": {}}
+    window = {"loss": [], "ce": [], "mse": [], "irepa": {}, "tokens": 0, "groups": {}}
     log_path = os.path.join(args.output_dir, "train_log.jsonl")
     t_log = time()
     torch.cuda.reset_peak_memory_stats()
@@ -433,12 +455,20 @@ def main():
             data.pop(key, None)
         window["tokens"] += int(data["sequence_length"])
 
+        align = irepa is not None and "packed_stream_ids" in data
+        images = data.get("padded_images")
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             if "padded_images" in data:
                 with torch.no_grad(), torch.amp.autocast("cuda", enabled=False):
                     data["padded_latent"] = _encode_padded_images_in_chunks(vae_model, data.pop("padded_images"))
-            loss_dict = model(**data)
+            loss_dict = model(**data, **({"irepa_layer": args.irepa_layer} if align else {}))
             loss, logs = compute_loss(loss_dict, args, symm_row_weights(data, groups, args.symm_image_weight))
+            if align:
+                irepa_loss, irepa_logs = irepa(loss_dict.pop("irepa_hidden"), images,
+                                               data["patchified_vae_latent_shapes"], data["packed_stream_ids"])
+                loss = loss + args.irepa_weight * irepa_loss
+                for key, value in {"irepa": float(irepa_loss), **irepa_logs}.items():
+                    window["irepa"].setdefault(key, []).append(value)
         if groups:
             batch_groups = per_group_losses(loss_dict, data, groups)
             total = sum(v["mse"][0] for v in batch_groups.values() if "mse" in v)
@@ -474,24 +504,28 @@ def main():
             group_text = " ".join(
                 f"{k}[{g}]={v[k]:.4f}" for g, v in per_group.items() for k in ("mse", "ce") if k in v
             )
+            irepa_logs = {k: mean(v) for k, v in window["irepa"].items()}
+            irepa_text = "".join(f" {k}={v:.4f}" for k, v in irepa_logs.items())
             print(
                 f"[finetune] step {step:5d}/{args.total_steps} loss={mean(window['loss']):.4f} "
-                f"ce={mean(window['ce']):.4f} mse={mean(window['mse']):.4f} {group_text} "
+                f"ce={mean(window['ce']):.4f} mse={mean(window['mse']):.4f}{irepa_text} {group_text} "
                 f"grad_norm={float(grad_norm):.3f} lr={scheduler.get_last_lr()[0]:.2e} "
                 f"tok/s={window['tokens'] / elapsed:.0f} peak_mem={torch.cuda.max_memory_allocated() / 2**30:.1f}GiB",
                 flush=True,
             )
             with open(log_path, "a") as f:
                 f.write(json.dumps({"step": step, "loss": mean(window["loss"]), "ce": mean(window["ce"]),
-                                    "mse": mean(window["mse"]), "per_group": per_group,
+                                    "mse": mean(window["mse"]), **irepa_logs, "per_group": per_group,
                                     "grad_norm": float(grad_norm), "lr": scheduler.get_last_lr()[0],
                                     "tok_per_s": window["tokens"] / elapsed}) + "\n")
-            window = {"loss": [], "ce": [], "mse": [], "tokens": 0, "groups": {}}
+            window = {"loss": [], "ce": [], "mse": [], "irepa": {}, "tokens": 0, "groups": {}}
             t_log = time()
 
         if step % args.save_every == 0 and step < args.total_steps:
-            save_adapter(model, adapter_config, os.path.join(args.output_dir, f"checkpoint-{step:06d}"), step,
-                         {"optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict()})
+            state = {"optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict()}
+            if irepa is not None:
+                state["irepa_head"] = irepa.head.state_dict()
+            save_adapter(model, adapter_config, os.path.join(args.output_dir, f"checkpoint-{step:06d}"), step, state)
         if step >= args.total_steps:
             break
 

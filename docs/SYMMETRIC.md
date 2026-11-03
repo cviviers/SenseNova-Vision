@@ -77,6 +77,13 @@ bash scripts/finetune_lora.sh data/configs/celebamask_hq/celebamask_symm.yaml --
 without the stream identity, which is only useful to reproduce the failure described above. The full trainer accepts the
 same YAML, also with `--timestep_shift 1.0`.
 
+`--irepa_weight 0.1` adds iREPA representation alignment ([train/irepa.py](../train/irepa.py)): the hidden states
+of both streams' latent tokens after `--irepa_layer` layers (default 8) pass through a 3x3 convolution and are aligned,
+by cosine similarity per token, with spatially z-scored DINOv2-B features of the clean photo at the same position
+(`--irepa_teacher`, `--irepa_alpha 0.6`). The encoder sees the photo at 14 pixels per latent token, so its patch grid
+is the token grid. The head trains with the adapter and is saved only in the checkpoints' training state, so adapters
+and exports are unchanged. The log gains `irepa` (one minus the mean cosine) and the mean cosine per stream.
+
 Read the per-stream curves, not the total. `image_t0.4` and `mask_t0.4` in `train_log.jsonl` are the loss of each stream
 for `t` in that bin. Each stream's clean end has an irreducible floor near 1, because noise cannot be predicted from
 data, so these totals are not comparable with the other modes.

@@ -147,6 +147,7 @@ class Bagel(PreTrainedModel):
         packed_timesteps: Optional[torch.LongTensor] = None,
         mse_loss_indexes: Optional[torch.BoolTensor] = None,
         packed_stream_ids: Optional[torch.LongTensor] = None,
+        irepa_layer: Optional[int] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -173,6 +174,8 @@ class Bagel(PreTrainedModel):
             packed_timesteps: 1-D float tensor, flow timesteps. 0 indicates use clean image.
             mse_loss_indexes: 1-D bool tensor, where to compute mse loss.
             packed_stream_ids: 1-D int tensor, symmetric-flow stream of each latent token (see _stream_embedding).
+            irepa_layer: also return the hidden states of the latent tokens after this many layers, in the order of
+                packed_vae_token_indexes, as "irepa_hidden" (representation alignment, train/irepa.py).
         """
         packed_text_embedding = self.language_model.model.embed_tokens(packed_text_ids)
         packed_sequence = packed_text_embedding.new_zeros(size=(sequence_length, self.hidden_size))
@@ -273,6 +276,8 @@ class Bagel(PreTrainedModel):
                 packed_gen_token_indexes=packed_vae_token_indexes,
             )
 
+        if irepa_layer is not None:
+            extra_inputs["capture_layer"] = irepa_layer
         last_hidden_state = self.language_model(
             packed_sequence=packed_sequence,
             sample_lens=sample_lens,
@@ -280,6 +285,10 @@ class Bagel(PreTrainedModel):
             packed_position_ids=packed_position_ids,
             **extra_inputs,
         )
+        irepa_hidden = None
+        if irepa_layer is not None:
+            last_hidden_state, captured = last_hidden_state
+            irepa_hidden = captured[packed_vae_token_indexes]
 
         mse = None
         has_mse_loss = False
@@ -303,7 +312,10 @@ class Bagel(PreTrainedModel):
         packed_ce_preds = self.language_model.lm_head(last_hidden_state[ce_loss_indexes])
         ce = F.cross_entropy(packed_ce_preds, packed_label_ids, reduction="none")
 
-        return dict(mse=mse, ce=ce, has_mse=has_mse_loss, has_ce=has_ce_loss)
+        out = dict(mse=mse, ce=ce, has_mse=has_mse_loss, has_ce=has_ce_loss)
+        if irepa_hidden is not None:
+            out["irepa_hidden"] = irepa_hidden
+        return out
 
         
     def prepare_prompts(self, curr_kvlens, curr_rope, prompts, tokenizer, new_token_ids):
