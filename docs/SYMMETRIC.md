@@ -2,8 +2,8 @@
 
 The other training modes treat segmentation and synthesis as two conditional tasks: a clean input in a cached prefix,
 then a noisy target that only reads from it. The `symm` mode learns one flow over a photo and its colour-coded map
-instead, in the spirit of symmetrical flow matching. Status: the implementation is verified locally on one RTX 5090.
-No full training run has been done yet.
+instead, in the spirit of symmetrical flow matching. The `symm_legend` mode does the same with the map in the
+colour-legend format of `img2palette_legend` (below).
 
 ## The flow
 
@@ -38,11 +38,33 @@ loss. Each modality keeps its own noise, so synthesis stays one-to-many.
 
 `--symm_image_weight` scales the photo stream's loss (default 0.5).
 
+## The legend variant (`symm_legend`)
+
+```
+[photo ViT, optional] [direction-free prompt + class list] [colour legend] [ photo VAE tokens | map VAE tokens ]
+                                                           CE only with ViT    map in the legend's colours
+```
+
+The legend is the text of `img2palette_legend`: `<p>class<color>(R, G, B)</color></p>` for each class present, largest
+first, with colours that belong to the legend position (a fixed farthest-point sequence), not to the class. It depends
+only on the label map, so it can sit in the prefix that both directions share:
+
+| Direction | Legend |
+|---|---|
+| Synthesis | Computed from the input map, which is drawn in the legend's colours. |
+| Segmentation | Generated first, greedily, from the ViT prefix and the prompt; the map is then read through it. |
+
+The text comes before the noise split, so it sees the photo only through the ViT prefix. The legend therefore has a loss
+only in samples with that prefix, and segmentation always uses it. Everything else is the `symm` mode unchanged. Compared
+with the official palettes, the legend's colours are far apart, and on COCO-Stuff the class list and legend carry the
+taxonomy that the palette prompt leaves to the colours.
+
 ## Training
 
-Set `mode_weights: {symm: 1.0}` in a dataset YAML, as in
-[celebamask_symm.yaml](../data/configs/celebamask_hq/celebamask_symm.yaml) and
-[cocostuff_symm.yaml](../data/configs/cocostuff/cocostuff_symm.yaml).
+Set `mode_weights: {symm: 1.0}` or `{symm_legend: 1.0}` in a dataset YAML, as in
+[celebamask_symm.yaml](../data/configs/celebamask_hq/celebamask_symm.yaml),
+[celebamask_symm_legend.yaml](../data/configs/celebamask_hq/celebamask_symm_legend.yaml) and their COCO-Stuff and
+Spike counterparts. A `symm_legend` run starts best from an adapter trained on `img2palette_legend`.
 
 ```bash
 bash scripts/finetune_lora.sh data/configs/celebamask_hq/celebamask_symm.yaml --output_dir results/symm/<run> \
@@ -51,8 +73,7 @@ bash scripts/finetune_lora.sh data/configs/celebamask_hq/celebamask_symm.yaml --
 
 `--init_adapter` starts from an existing adapter with a fresh optimizer and step count. `--symm_embedding False` trains
 without the stream identity, which is only useful to reproduce the failure described above. The full trainer accepts the
-same YAML, also with `--timestep_shift 1.0`. The COCO-Stuff legend format does not carry over, because its text prefix
-depends on the image, so COCO-Stuff stays on the palette.
+same YAML, also with `--timestep_shift 1.0`.
 
 Read the per-stream curves, not the total. `image_t0.4` and `mask_t0.4` in `train_log.jsonl` are the loss of each stream
 for `t` in that bin. Each stream's clean end has an irreducible floor near 1, because noise cannot be predicted from
@@ -77,6 +98,14 @@ python -m inference.benchmark.eval_seg_seg2img --dataset celebamask --adapter <d
 
 For a one-step baseline of a conventional model: `--num_timesteps 2 --cfg_text_scale 1.0`.
 
+A `symm_legend` model takes `--format legend` in both scripts. Segmentation then reports the legend's class presence
+against the ground truth (precision, recall, F1), as every legend evaluation does.
+
+| Flag | Effect |
+|---|---|
+| `--legend_cache <dir>` | Keep generated legends per image and reuse them in later runs of the same model |
+| `--oracle_legend` | Segment with the ground-truth legend: separates map quality from legend errors |
+
 ## Segmentation decoder
 
 The VAE is trained on natural images and blurs flat colours, so a small decoder can read the map latent into classes
@@ -93,6 +122,19 @@ python -m inference.benchmark.eval_seg_img2palette --dataset celebamask --adapte
 Always train the `existing` control too. It is the same decoder on the same data without the symmetric flow, and it shows
 how much of a gain comes from the decoder rather than from the flow. Evaluate it with `--decoder` and without `--symm`.
 The decoder's architecture is a plain upsampling convolutional stack; sizes `S`, `M` and `L` differ in width and depth.
+
+With `--legend` the decoder predicts legend slots instead of classes (0 = background or unlabeled, `k` = the `k`-th
+legend entry, up to `--max_slots`), and evaluation maps slots to classes through the generated legend. The `existing`
+control is then a model trained on `img2palette_legend`, evaluated with `--format legend --decoder` and without `--symm`:
+its own legend, one conditional step, the same decoder.
+
+Predicting a latent costs a pass of the whole model, which dominates training. `--cache_dir <dir>` predicts the latents
+once (`--cache_predicted` per image, plus the ground truth) and trains from memory. On Spike:
+
+```bash
+bash scripts/spike_submit.sh <run> decoder celebamask --flow symm --legend --adapter /data/runs/<lora run>/final \
+  --cache_dir /data/runs/<run>/cache --size S
+```
 
 ## Checks
 

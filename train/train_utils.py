@@ -67,13 +67,15 @@ def per_group_losses(loss_dict, data, groups):
 def symm_rows(data, groups):
     """(stream, t) per mse row, or None without symm samples: stream is 1 = photo, 2 = map, 0 = another mode.
 
-    In a symm sample the photo stream's rows come first and the map's second, half and half. Rows follow the VAE
+    In a symm or symm_legend sample the photo stream's rows come first and the map's second, half and half. Rows follow the VAE
     tokens that have a finite timestep (conditioning images are -inf and carry no loss).
     """
     import torch
 
+    from data.seg_multitask import SYMM_MODES
+
     index = data.get("mse_loss_indexes")
-    if index is None or "symm" not in groups:
+    if index is None or not any(g in SYMM_MODES for g in groups):
         return None
     ends = torch.cumsum(torch.as_tensor(data["sample_lens"], device="cpu"), 0)
     sample_ids = torch.searchsorted(ends, index.cpu(), right=True)
@@ -81,7 +83,7 @@ def symm_rows(data, groups):
     noise_level = torch.sigmoid(timesteps[timesteps > float("-inf")])
     stream = torch.zeros(len(index), dtype=torch.long)
     for sid in sample_ids.unique().tolist():
-        if groups[sid] == "symm":
+        if groups[sid] in SYMM_MODES:
             rows = (sample_ids == sid).nonzero().squeeze(1)
             stream[rows[: len(rows) // 2]] = 1
             stream[rows[len(rows) // 2 :]] = 2

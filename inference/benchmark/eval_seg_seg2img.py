@@ -19,7 +19,9 @@ generate a photo with the training prompt in edit mode, and measure
                or rely on KID for small sets.
 
 --symm evaluates a model trained with the symmetric flow (docs/SYMMETRIC.md): synthesis from t = 1 and segmentation from
-t = 0 with the same model, the round trip included.
+t = 0 with the same model, the round trip included. --symm --format legend evaluates a symm_legend model: the input map
+is drawn in the colours of its own legend, which joins the prompt; the round trip generates a legend for the generated
+photo (--legend_cache applies to the ceiling's real photos only).
 
 Large FID runs: --num_samples 50000 reuses every map with new noise seeds until 50k photos exist,
 --check_seeds 1 limits the photo check / round trip to one photo per map, and --num_shards/--shard_id
@@ -55,6 +57,7 @@ from inference.benchmark.seg_eval_common import (
     get_dataset,
     load_model,
     segment_symm,
+    segment_symm_legend,
     segment_to_palette,
     summarize,
     symm_flow,
@@ -116,7 +119,14 @@ def main():
     parser.add_argument("--no_roundtrip", action="store_true", help="Skip the round-trip layout check.")
     parser.add_argument("--no_photo_check", action="store_true")
     parser.add_argument("--no_fid", action="store_true")
+    parser.add_argument("--format", default="palette", choices=("palette", "legend"),
+                        help="--symm: palette (mode symm) or legend (mode symm_legend).")
+    parser.add_argument("--max_text_tokens", type=int, default=1024, help="--format legend: legend length limit.")
     args = parser.parse_args()
+    if args.format == "legend" and not args.symm:
+        parser.error("--format legend applies to --symm (symm_legend models)")
+    if args.oracle_legend:
+        parser.error("--oracle_legend is a segmentation diagnostic; the round trip has no ground-truth legend")
 
     ds = get_dataset(args)
     prompt_fn = ds.seg2img_prompt if args.prompt == "training" else ds.seg2img_region_prompt
@@ -149,13 +159,21 @@ def main():
             with open(f"{out}/config.json", "w") as f:
                 json.dump({**vars(args), **info, "inference_overrides": params}, f, indent=2, default=str)
 
-    def segment(image, seed):
+    def segment(image, seed, key=None):
+        if args.symm and args.format == "legend":
+            raw, pred, _ = segment_symm_legend(flow, ds, image, seed, args, key)
+            return raw, pred, 0.0
         if args.symm:
             return segment_symm(flow, ds, image, seed, args)
         return segment_to_palette(model, ds, image, seed, {}, transforms)
 
     def generate(label, seed):
         palette_map = Image.fromarray(ds.palette[label])
+        if args.symm and args.format == "legend":
+            legend_map, legend, _ = ds.legend_map(label)
+            beta = ds.symm_beta if args.symm_beta is None else args.symm_beta
+            return flow.synthesize(legend_map, ds.symm_legend_prompt(), seed=seed, num_steps=args.symm_gen_steps,
+                                   beta=beta, recompute_known=args.symm_recompute_known, legend=legend)
         if args.symm:
             beta = ds.symm_beta if args.symm_beta is None else args.symm_beta
             return flow.synthesize(palette_map, ds.symm_prompt(), seed=seed, num_steps=args.symm_gen_steps, beta=beta,
@@ -190,7 +208,7 @@ def main():
         print(f"[seg2img] {n}/{len(jobs)} {k} seed={s} {rec['seconds']:.1f}s eta={eta:.0f}min", flush=True)
 
     for n, k in enumerate(ceiling_todo, 1):
-        _, pred, _ = segment(ds.load(k)[0], args.seed + int(k) % 1_000_000)
+        _, pred, _ = segment(ds.load(k)[0], args.seed + int(k) % 1_000_000, key=k)
         save_png(Image.fromarray(pred), f"{out}/ceiling/{k}.png")
         print(f"[seg2img] ceiling {n}/{len(ceiling_todo)} {k}", flush=True)
 

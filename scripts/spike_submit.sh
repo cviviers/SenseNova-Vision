@@ -9,6 +9,8 @@
 #       zero-shot: no extra model args; LoRA: --adapter /data/runs/<lora run>/final;
 #       full fine-tune: --model_path /data/runs/<run>/export_<step>
 #   bash scripts/spike_submit.sh <full run> export <step, e.g. 0000449>
+#   bash scripts/spike_submit.sh <run> decoder <celebamask|cocostuff> [train/train_seg_decoder.py args]
+#       e.g. --flow symm --legend --adapter /data/runs/<lora run>/final --size S
 #
 #   full    scripts/finetune_full.sh (FSDP, all weights); resubmitting the same <run> resumes from its
 #           latest checkpoint. B200 batch profile below: 2x the release's batch per update.
@@ -19,6 +21,7 @@
 #           EVAL_TASKS, SEG2IMG_ARGS and BINSEG_PROMPT are passed through when set
 #   export  tools/export_full_checkpoint.py: /data/runs/<run>/checkpoint/<step> -> /data/runs/<run>/export_<step>
 #           (BF16 EMA weights, a model dir for --model_path); the workload is named <run>-export-<step>
+#   decoder train/train_seg_decoder.py (one GPU, resumes from <run>/decoder.pt) on a frozen model or adapter
 #
 # Commit and push first: the job only sees what is on GitHub. Outputs go to /data/runs/<run>.
 #
@@ -30,25 +33,25 @@
 #   SPIKE_PULL_CRED   personal dockerRegistry credential for Harbor (default harbor-pull)
 #   SPIKE_UID/GID     user the job runs as; must own /data (default 20236095, `id` in the sshv3 workspace)
 #   SPIKE_PREEMPTIBILITY  preemptible or non-preemptible (default: non-preemptible for full/lora/tiny, which
-#                     must stay within the project quota; preemptible for eval and export, which may use idle
+#                     must stay within the project quota; preemptible for eval, export and decoder, which may use idle
 #                     GPUs over quota; eval resumes per image). Preempted training restarts from its latest
 #                     checkpoint.
 #   SPIKE_DRY_RUN=1   print the runai command instead of submitting it
 set -euo pipefail
 
 run="${1:?run name (lowercase letters, digits and dashes)}"
-mode="${2:?mode: full, lora, tiny, eval or export}"
-config="${3:?dataset config yaml (eval: celebamask or cocostuff; export: checkpoint step)}"
+mode="${2:?mode: full, lora, tiny, eval, export or decoder}"
+config="${3:?dataset config yaml (eval, decoder: celebamask or cocostuff; export: checkpoint step)}"
 shift 3
 
 [[ "${run}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || { >&2 echo "Error: run name must match [a-z0-9-]"; exit 1; }
 case "${mode}" in
   full) default_compute=eight-gpu ;;
-  lora | tiny | eval | export) default_compute=one-gpu ;;
-  *) >&2 echo "Error: mode must be full, lora, tiny, eval or export"; exit 1 ;;
+  lora | tiny | eval | export | decoder) default_compute=one-gpu ;;
+  *) >&2 echo "Error: mode must be full, lora, tiny, eval, export or decoder"; exit 1 ;;
 esac
 case "${mode}" in
-  eval | export) default_preempt=preemptible ;;
+  eval | export | decoder) default_preempt=preemptible ;;
   *) default_preempt=non-preemptible ;;
 esac
 preemptibility="${SPIKE_PREEMPTIBILITY:-${default_preempt}}"
@@ -57,6 +60,9 @@ case "${mode}" in
   eval)
     [[ "${config}" =~ ^(celebamask|cocostuff)$ ]] || { >&2 echo "Error: eval takes celebamask or cocostuff"; exit 1; }
     config_file=scripts/eval_seg_tasks.sh ;;
+  decoder)
+    [[ "${config}" =~ ^(celebamask|cocostuff)$ ]] || { >&2 echo "Error: decoder takes celebamask or cocostuff"; exit 1; }
+    config_file=train/train_seg_decoder.py ;;
   export)
     [[ "${config}" =~ ^[0-9]{7}$ ]] || { >&2 echo "Error: export takes a 7-digit checkpoint step, e.g. 0000449"; exit 1; }
     config_file=tools/export_full_checkpoint.py
@@ -158,6 +164,10 @@ case "${mode}" in
     exec bash scripts/eval_seg_tasks.sh "${config}" "${SENSENOVA_RUN_DIR}" "$@" ;;
   export)
     exec python tools/export_full_checkpoint.py --checkpoint "${SENSENOVA_RUN_DIR}/checkpoint/${config}" --output_dir "${SENSENOVA_RUN_DIR}/export_${config}" "$@" ;;
+  decoder)
+    export PYTHONPATH="${code_dir}:${code_dir}/inference:${PYTHONPATH:-}"
+    if [ "${config}" = celebamask ]; then root="${CELEBAMASK_HQ_ROOT}"; else root="${COCOSTUFF_ROOT}"; fi
+    exec python -m train.train_seg_decoder --dataset "${config}" --dataset_root "${root}" --max_mem_per_gpu "${SENSENOVA_MAX_MEM_PER_GPU}" --output_dir "${SENSENOVA_RUN_DIR}" "$@" ;;
 esac
 '
 

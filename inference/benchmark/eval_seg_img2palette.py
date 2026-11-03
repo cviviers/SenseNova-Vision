@@ -26,7 +26,10 @@ Outputs (resumable; existing pred/<key>.png are skipped):
         --adapter results/cocostuff_lora_i2p_s2i/final --output_dir results/cocostuff_eval/final/img2palette --limit 500
 
 --symm evaluates a model trained with the symmetric flow (docs/SYMMETRIC.md): one step from t = 0 by default, without
-guidance; --decoder reads the map through a segmentation decoder instead of the VAE.
+guidance; --decoder reads the map through a segmentation decoder instead of the VAE. --symm --format legend evaluates a
+symm_legend model: the legend is generated from the photo's ViT prefix first (--legend_cache keeps it for later runs,
+--oracle_legend uses the ground truth instead), then the map is read through it. Legend class presence against the
+ground truth (precision, recall, F1) is reported for every legend evaluation.
 
 --num_shards/--shard_id --generate_only split the images over GPUs; a final run without them computes the metrics
 from the files (scripts/eval_seg_tasks.sh does this for img2legend on all visible GPUs).
@@ -49,7 +52,10 @@ from inference.benchmark.seg_eval_common import (
     generation_params,
     get_dataset,
     load_model,
+    presence_f1,
+    segment_legend_conditional,
     segment_symm,
+    segment_symm_legend,
     segment_to_palette,
     segment_with_legend,
     summarize,
@@ -62,7 +68,8 @@ def main():
     add_model_args(parser)
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--format", default="palette", choices=["palette", "legend"],
-                        help="palette: the fine-tuning prompt and fixed palette; legend: colour legend + mask (cocostuff).")
+                        help="palette: the fine-tuning prompt and fixed palette; legend: colour legend + mask (with "
+                             "--symm: a symm_legend model).")
     parser.add_argument("--max_text_tokens", type=int, default=1024, help="--format legend: legend length limit.")
     parser.add_argument("--num_shards", type=int, default=1, help="Split the images over N processes, e.g. one per GPU.")
     parser.add_argument("--shard_id", type=int, default=0)
@@ -73,6 +80,8 @@ def main():
     ds = get_dataset(args)
     if args.format == "legend" and not hasattr(ds, "legend_prompt"):
         parser.error(f"--format legend is not implemented for {ds.name}")
+    if (args.oracle_legend or args.legend_cache) and not (args.format == "legend" and (args.symm or args.decoder)):
+        parser.error("--oracle_legend and --legend_cache apply to --format legend with --symm or --decoder")
     out = args.output_dir
     for sub in ("raw", "pred"):
         os.makedirs(os.path.join(out, sub), exist_ok=True)
@@ -93,11 +102,18 @@ def main():
         start = time.time()
         for n, key in enumerate(todo, 1):
             t0 = time.time()
-            photo, _ = ds.load(key)
+            photo, gt = ds.load(key)
             seed = args.seed + int(key) % 1_000_000
             if args.format == "legend":
-                raw, label, rec = segment_with_legend(model, ds, photo, seed, params, transforms, args.max_text_tokens)
-                note = f"legend={rec['legend_entries']} unmatched={len(rec['unmatched'])}"
+                if args.symm:
+                    raw, label, rec = segment_symm_legend(flow, ds, photo, seed, args, key, gt)
+                elif args.decoder:  # one-step control: v4's own legend, one conditional step, slot decoder
+                    raw, label, rec = segment_legend_conditional(flow, ds, photo, seed, args, key, gt)
+                else:
+                    raw, label, rec = segment_with_legend(model, ds, photo, seed, params, transforms,
+                                                          args.max_text_tokens, gt)
+                note = (f"legend={rec['legend_entries']} unmatched={len(rec['unmatched'])} "
+                        f"tp/fp/fn={rec.get('legend_tp')}/{rec.get('legend_fp')}/{rec.get('legend_fn')}")
             else:
                 raw, label, off = (segment_symm(flow, ds, photo, seed, args) if use_flow else
                                    segment_to_palette(model, ds, photo, seed, params, transforms))
@@ -128,9 +144,11 @@ def main():
         entries = sum(l["legend_entries"] for l in logs)
         metrics.update(mean_legend_entries=entries / len(logs),
                        unmatched_phrase_share=sum(len(l["unmatched"]) for l in logs) / max(entries, 1),
-                       empty_legend_rate=float(np.mean([l["legend_entries"] == 0 for l in logs])))
+                       empty_legend_rate=float(np.mean([l["legend_entries"] == 0 for l in logs])),
+                       **presence_f1(logs))
         note = (f"legend entries {metrics['mean_legend_entries']:.1f}/image, unmatched "
-                f"{metrics['unmatched_phrase_share']:.3f}, empty {metrics['empty_legend_rate']:.3f}")
+                f"{metrics['unmatched_phrase_share']:.3f}, empty {metrics['empty_legend_rate']:.3f}"
+                + (f", presence F1 {metrics['legend_f1']:.3f}" if "legend_f1" in metrics else ""))
     else:
         metrics["mean_off_palette_share"] = float(np.mean([l["off_palette"] for l in logs]))
         note = f"off-palette {metrics['mean_off_palette_share']:.4f}"

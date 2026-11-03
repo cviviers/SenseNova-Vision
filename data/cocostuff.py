@@ -24,6 +24,8 @@ Modes (one fixed prompt or template each; see the PROMPT constants below):
     seg2img              full colour map -> photo (colour key of the classes present in the input map)
     img2palette_legend   photo -> colour legend (text, CE loss) + map in those colours: the released model's
                          own generic-segmentation format (see LEGEND_PROMPT)
+    symm                 photo and palette map on one symmetric flow (docs/SYMMETRIC.md)
+    symm_legend          symm with img2palette_legend's colour legend and colours (SYMM_LEGEND_PROMPT)
 """
 
 import io
@@ -157,6 +159,17 @@ LEGEND_PROMPT = (
 )
 
 
+# symm_legend: direction-free like SYMM_PROMPT, with the category list of LEGEND_PROMPT (the taxonomy is most of
+# what the legend format adds on COCO-Stuff). The colour legend of legend_task follows as its own text.
+SYMM_LEGEND_PROMPT = (
+    "Two images of the same scene. The first image is a realistic, natural photograph. The second image is its "
+    "semantic segmentation map in flat colours, over these categories: "
+    + ", ".join(f"<p>{legend_name(c)}</p>" for c in USED_IDS)
+    + ". The colours follow the legend below, which lists the categories present, largest first, in the format "
+    "<p>category<color>(R, G, B)</color></p>; black (0, 0, 0) marks unlabeled regions."
+)
+
+
 LEGEND_COLOURS = [(255, 255, 255)] + [tuple(int(v) for v in PALETTE[c]) for c in USED_IDS]  # farthest-point order
 
 
@@ -213,6 +226,9 @@ def sample_task(rng, label, mode, partial_present_range=(1, 8), partial_absent_m
         return legend_task(label)
     if mode == "symm":
         return None, SYMM_PROMPT, palette_image(label), {}
+    if mode == "symm_legend":
+        _, _, legend_map, info = legend_task(label)
+        return None, SYMM_LEGEND_PROMPT, legend_map, info
     raise ValueError(f"unknown mode {mode!r}")
 
 
@@ -273,6 +289,7 @@ class CocoStuffMultiTaskDataset(SegMultiTaskDataset):
         symm_beta: 6                    symm: map dequantization, 0-255 scale
         symm_vit_prob: 0.5              symm: share of samples with the photo's ViT prefix
         symm_endpoint_prob: 0.2         symm: share of samples at t = 0 or 1 instead of uniform t
+        symm_text_dropout: 0.0          symm: share of samples without prompt and legend (for text guidance)
     """
 
     MODES = SegMultiTaskDataset.MODES + ("img2palette_legend",)
@@ -281,9 +298,11 @@ class CocoStuffMultiTaskDataset(SegMultiTaskDataset):
     def __init__(self, dataset_name, transform, tokenizer, vit_transform, data_dir_list, num_used_data,
                  local_rank=0, world_size=1, num_workers=8, data_status=None, mode_weights=None,
                  partial_present_range=(1, 8), partial_absent_max=2, binary_present_prob=0.8, shuffle_lines=True,
-                 shuffle_seed=0, task_prompt=None, symm_beta=0.0, symm_vit_prob=0.5, symm_endpoint_prob=0.2):
+                 shuffle_seed=0, task_prompt=None, symm_beta=0.0, symm_vit_prob=0.5, symm_endpoint_prob=0.2,
+                 symm_text_dropout=0.0):
         super().__init__(dataset_name, transform, tokenizer, vit_transform, local_rank, world_size, num_workers,
-                         data_status, mode_weights, shuffle_seed, symm_beta, symm_vit_prob, symm_endpoint_prob)
+                         data_status, mode_weights, shuffle_seed, symm_beta, symm_vit_prob, symm_endpoint_prob,
+                         symm_text_dropout)
         self.partial_present_range = tuple(partial_present_range)
         self.partial_absent_max = partial_absent_max
         self.binary_present_prob = binary_present_prob

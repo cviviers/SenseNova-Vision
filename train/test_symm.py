@@ -34,6 +34,7 @@ from train.train_utils import per_group_losses, per_stream_losses, summarize_gro
 
 SIZE = 128
 PROMPT = "Two images of the same face. The first is a photograph, the second its segmentation map."
+LEGEND = "<p>face skin<color>(255, 255, 255)</color></p>, <p>hair<color>(0, 128, 255)</color></p>"
 DEVICE = "cuda"
 
 
@@ -54,6 +55,7 @@ def make_dataset(tokenizer, vit_prob, beta=10.0):
     dataset.symm_beta = beta
     dataset.symm_vit_prob = vit_prob
     dataset.symm_endpoint_prob = 0.0
+    dataset.symm_text_dropout = 0.0
     return dataset
 
 
@@ -156,11 +158,12 @@ def make_flow(model, vae, tokenizer, new_token_ids):
     return SymmetricFlow(wrapper)
 
 
-def check_parity(model, flow, packer, tokenizer, use_vit):
+def check_parity(model, flow, packer, tokenizer, use_vit, legend=None, text_dropped=False):
     """The inference path (cached prefix + joint query) must match the training path on identical inputs."""
     photo, mask = make_images()
-    sample = make_dataset(tokenizer, 1.0 if use_vit else 0.0, beta=0.0).build_symm_sample(random.Random(1), photo,
-                                                                                          PROMPT, mask)
+    dataset = make_dataset(tokenizer, 1.0 if use_vit else 0.0, beta=0.0)
+    dataset.symm_text_dropout = 1.0 if text_dropped else 0.0
+    sample = dataset.build_symm_sample(random.Random(1), photo, PROMPT, mask, legend)
     data = to_device(pack(packer, [sample]))
     data.pop("ce_loss_weights", None)
     images = data.pop("padded_images")
@@ -190,7 +193,7 @@ def check_parity(model, flow, packer, tokenizer, use_vit):
         clean = torch.cat([zx, zm])
         noise_level = torch.cat([torch.full((num_tokens,), t), torch.full((num_tokens,), 1 - t)]).to(DEVICE)
         noisy = (1 - noise_level[:, None]) * clean + noise_level[:, None] * captured["noise"].float()
-        context = flow._context(PROMPT, photo if use_vit else None)
+        context = flow._context(None if text_dropped else PROMPT, photo if use_vit else None, legend)
         query = model.prepare_vae_latent(context["kv_lens"] + [0], [SYMM_ROPE_IMAGE, context["ropes"][0]], [shape, shape],
                                          flow.new_token_ids)
         query.pop("packed_init_noises")
@@ -300,8 +303,108 @@ def check_endpoints(packer, tokenizer):
     assert 0.17 < low < 0.33 and 0.17 < high < 0.33, (low, high)
 
 
+def check_legend_sample(packer, tokenizer, vit_prob):
+    """symm_legend: the legend is text between the prompt and the split, with a loss only with the ViT prefix; the
+    map stream's RoPE id follows the legend; the prefix still cannot see the split."""
+    photo, mask = make_images()
+    sample = make_dataset(tokenizer, vit_prob).build_symm_sample(random.Random(0), photo, PROMPT, mask, LEGEND)
+    has_vit = vit_prob == 1.0
+    plan = sample["sequence_plan"]
+    assert [i["type"] for i in plan] == ["vit_image"] * has_vit + ["text", "text", "vae_image", "vae_image"]
+    assert plan[-4]["loss"] == 0 and plan[-3]["loss"] == int(has_vit), "legend loss only with the ViT prefix"
+    data = pack(packer, [sample])
+    legend_len = len(tokenizer.encode(LEGEND))
+    num_ce = len(data.get("ce_loss_indexes", []))
+    assert (num_ce > 0) == has_vit and (not has_vit or legend_len <= num_ce <= legend_len + 1), num_ce
+    num_tokens = (SIZE // 16) ** 2
+    prefix = data["sequence_length"] - 2 * (num_tokens + 2)
+    can_attend = data["nested_attention_masks"][0] == 0
+    assert not can_attend[:prefix, prefix:].any() and can_attend[prefix:, :prefix].all()
+    rope = data["packed_position_ids"]
+    text_len = len(tokenizer.encode(PROMPT)) + 2 + legend_len + 2
+    assert (rope[prefix : prefix + num_tokens + 2] == SYMM_ROPE_IMAGE).all()
+    assert (rope[prefix + num_tokens + 2 :] == SYMM_ROPE_TEXT + text_len).all()
+    assert len(data["mse_loss_indexes"]) == 2 * num_tokens
+
+
+def check_text_dropout(packer, tokenizer):
+    """symm_text_dropout leaves out the prompt and the legend together; the map stream then follows the prefix."""
+    photo, mask = make_images()
+    for vit_prob in (0.0, 1.0):
+        dataset = make_dataset(tokenizer, vit_prob)
+        dataset.symm_text_dropout = 1.0
+        sample = dataset.build_symm_sample(random.Random(0), photo, PROMPT, mask, LEGEND)
+        assert [i["type"] for i in sample["sequence_plan"]] == ["vit_image"] * (vit_prob == 1.0) + ["vae_image"] * 2
+        data = pack(packer, [sample])
+        num_tokens = (SIZE // 16) ** 2
+        rope = data["packed_position_ids"]
+        assert (rope[-(num_tokens + 2):] == SYMM_ROPE_TEXT).all() and len(data.get("ce_loss_indexes", [])) == 0
+    dataset.symm_text_dropout = 0.3
+    kept = sum(len(dataset.build_symm_sample(random.Random(s), photo, PROMPT, mask, LEGEND)["sequence_plan"]) == 5
+               for s in range(400)) / 400
+    assert 0.6 < kept < 0.8, kept
+
+
+def check_legend_training_step(model, packer, tokenizer):
+    """A batch mixing symm and symm_legend samples: CE on the legend with ViT, per-stream rows for both modes."""
+    photo, mask = make_images()
+    samples = [make_dataset(tokenizer, 1.0).build_symm_sample(random.Random(0), photo, PROMPT, mask),
+               make_dataset(tokenizer, 1.0).build_symm_sample(random.Random(1), photo, PROMPT, mask, LEGEND),
+               make_dataset(tokenizer, 0.0).build_symm_sample(random.Random(2), photo, PROMPT, mask, LEGEND)]
+    groups = ["symm", "symm_legend", "symm_legend"]
+    data = to_device(pack(packer, samples))
+    data.pop("ce_loss_weights", None)
+    data["padded_latent"] = model.vae_for_test.encode(data.pop("padded_images").to(DEVICE, torch.bfloat16)).float()
+    num_tokens = (SIZE // 16) ** 2
+    model.train()
+    with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+        out = model(**data)
+    assert out["ce"] is not None and out["ce"].numel() == len(data["ce_loss_indexes"]) and torch.isfinite(out["ce"]).all()
+    weights = symm_row_weights(data, groups, 0.5)
+    assert weights.shape == (6 * num_tokens,) and (weights == 0.5).sum() == 3 * num_tokens
+    streams = per_stream_losses(out, data, groups)
+    assert sum(v["mse"][1] for v in streams.values()) == 6 * num_tokens
+
+
+def check_legend_dataset():
+    """The real dataset modules draw symm_legend samples in the legend's colours, and the evaluation reads such a
+    map back to the label map through the legend text."""
+    from data import celebamask, cocostuff
+    from inference.benchmark.seg_eval_common import CelebAMaskEval, CocoStuffEval, legend_presence, legend_to_label
+
+    rng = np.random.default_rng(0)
+    for module, ds, ids in ((celebamask, CelebAMaskEval("unused"), celebamask.FACE_CLASS_IDS),
+                            (cocostuff, CocoStuffEval.__new__(CocoStuffEval), cocostuff.USED_IDS)):
+        if module is cocostuff:
+            ds.m = cocostuff
+            ds.eval_ids = list(cocostuff.USED_IDS)
+        label = np.zeros((64, 64), dtype=np.uint8)
+        chosen = [int(c) for c in rng.choice(ids, 5, replace=False)]
+        for i, cid in enumerate(chosen):  # stripes of decreasing area
+            label[i * 12 : i * 12 + 12 - i] = cid
+        source, prompt, legend_map, info = module.sample_task(random.Random(0), label, "symm_legend")
+        assert source is None and prompt == module.SYMM_LEGEND_PROMPT and info["classes"] == chosen
+        colours = {tuple(c) for c in np.asarray(legend_map).reshape(-1, 3)}
+        assert colours <= set(module.LEGEND_COLOURS[: len(chosen)]) | {(0, 0, 0)}, "legend colours and black only"
+        decoded, decoded_info = legend_to_label(ds, legend_map, info["answer"], legend_map.size)
+        assert np.array_equal(decoded, label), f"{module.__name__}: the legend must decode its own map"
+        assert decoded_info["legend_ids"] == chosen and not decoded_info["unmatched"]
+        assert legend_presence(ds, decoded_info["legend_ids"], label) == (5, 0, 0)
+        assert legend_presence(ds, decoded_info["legend_ids"][:3], label) == (3, 0, 2)
+
+
+def check_legend_sampler(flow):
+    """Legend generation from the ViT prefix, and both directions with a legend in the context."""
+    photo, mask = make_images()
+    text = flow.generate_legend(photo, PROMPT, max_tokens=8)
+    assert isinstance(text, str)
+    assert flow.segment(photo, PROMPT, seed=0, use_vit=True, legend=LEGEND).size == (SIZE, SIZE)
+    assert flow.synthesize(mask, PROMPT, seed=0, num_steps=2, beta=10, legend=LEGEND).size == (SIZE, SIZE)
+
+
 def check_guards():
     assert uses_symm({"a": {"mode_weights": {"symm": 1.0}}})
+    assert uses_symm({"a": {"mode_weights": {"symm_legend": 1.0, "seg2img": 0}}})
     assert not uses_symm({"a": {"mode_weights": {"symm": 0}}, "b": {"mode_weights": {"seg2img": 1}}, "c": {}})
     _, mask = make_images()
     assert dequantize(mask, random.Random(0), 0) is mask
@@ -335,11 +438,28 @@ def main():
     print("stream identity ok: ids, signs, restore, legacy batches untouched")
     check_training_step(model, packer, tokenizer)
     print("training step ok: rows, weights, per-stream logs, gradients")
+    check_legend_dataset()
+    print("legend data ok: legend colours, decoding through the legend, presence counts")
+    for vit_prob in (0.0, 1.0):
+        check_legend_sample(packer, tokenizer, vit_prob)
+    print("legend packing ok: legend loss only with ViT, RoPE ids after the legend")
+    check_text_dropout(packer, tokenizer)
+    print("text dropout ok: prompt and legend dropped together, map RoPE id after the prefix")
+    check_legend_training_step(model, packer, tokenizer)
+    print("legend training step ok: CE on the legend, rows of both symm modes")
     flow = make_flow(model, vae, tokenizer, new_token_ids)
     for use_vit in (False, True):
         print(f"parity ok, ViT {use_vit}: {check_parity(model, flow, packer, tokenizer, use_vit):.5f} relative difference")
+    for use_vit in (False, True):
+        diff = check_parity(model, flow, packer, tokenizer, use_vit, LEGEND)
+        print(f"parity ok with a legend, ViT {use_vit}: {diff:.5f} relative difference")
+    for use_vit in (False, True):
+        diff = check_parity(model, flow, packer, tokenizer, use_vit, text_dropped=True)
+        print(f"parity ok without text, ViT {use_vit}: {diff:.5f} relative difference")
     check_sampler(model, flow)
     print("sampler ok: segmentation and synthesis, integrated and recomputed known stream")
+    check_legend_sampler(flow)
+    print("legend sampler ok: legend generation, both directions with a legend")
     check_decoder(model, flow)
     print("decoder ok: unpacking, resolution, loss, empty labels, checkpoint")
     print("ALL PASSED")

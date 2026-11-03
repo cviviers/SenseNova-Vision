@@ -54,6 +54,14 @@ class CelebAMaskEval:
     def symm_prompt(self):
         return self.m.SYMM_PROMPT
 
+    def symm_legend_prompt(self):
+        return self.m.SYMM_LEGEND_PROMPT
+
+    def legend_map(self, label):
+        """(map in the legend's colours, legend text, class ids in legend order) for a label map, as in training."""
+        _, _, image, info = self.m.legend_task(label)
+        return image, info["answer"], info["classes"]
+
     def seg2img_prompt(self, label):
         return self.m.seg2img_prompt(label)
 
@@ -126,6 +134,14 @@ class CocoStuffEval:
     def symm_prompt(self):
         return self.m.SYMM_PROMPT
 
+    def symm_legend_prompt(self):
+        return self.m.SYMM_LEGEND_PROMPT
+
+    def legend_map(self, label):
+        """(map in the legend's colours, legend text, class ids in legend order) for a label map, as in training."""
+        _, _, image, info = self.m.legend_task(label)
+        return image, info["answer"], info["classes"]
+
     def seg2img_prompt(self, label):
         return self.m.seg2img_prompt(label)
 
@@ -180,6 +196,12 @@ def add_model_args(parser):
                         help="--symm: compute the known stream at every step instead of integrating it.")
     parser.add_argument("--decoder", default=None,
                         help="--symm or one-step eval: segmentation decoder checkpoint (train/train_seg_decoder.py).")
+    parser.add_argument("--oracle_legend", action="store_true",
+                        help="--symm --format legend: use the ground-truth colour legend instead of generating one "
+                             "(diagnostic: separates map quality from legend errors).")
+    parser.add_argument("--legend_cache", default=None,
+                        help="--symm --format legend: directory of generated legends (<key>.txt), reused by later "
+                             "evaluations of the same model on the same photos.")
 
 
 def generation_params(args, ds):
@@ -275,42 +297,149 @@ def segment_symm(flow, ds, photo, seed, args):
     return Image.fromarray(ds.palette[label]), label, 0.0
 
 
-def decode_label(flow, ds, latent, shape, size):
-    """Class ids from latent tokens through the segmentation decoder, at PIL size (W, H)."""
+def decoder_logits(flow, latent, shape, size):
+    """Decoder logits (1, classes, H, W) for latent tokens, upsampled to PIL size (W, H)."""
     from modeling.seg_decoder import unpack_latent
 
     z = unpack_latent(flow.model, latent, shape)
     with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
         logits = flow.decoder(z.to(next(flow.decoder.parameters()).dtype))
-    logits = torch.nn.functional.interpolate(logits.float(), size=size[::-1], mode="bilinear", align_corners=False)
+    return torch.nn.functional.interpolate(logits.float(), size=size[::-1], mode="bilinear", align_corners=False)
+
+
+def decode_label(flow, ds, latent, shape, size):
+    """Class ids from latent tokens through the segmentation decoder, at PIL size (W, H)."""
+    logits = decoder_logits(flow, latent, shape, size)
     allowed = torch.zeros(ds.num_ids, dtype=torch.bool, device=logits.device)
     allowed[ds.eval_ids if ds.ignore_unlabeled else list(range(ds.num_ids))] = True
     logits[:, ~allowed] = float("-inf")
     return logits.argmax(1)[0].cpu().numpy().astype(np.uint8)
 
 
-def segment_with_legend(model, ds, photo, seed, params, transforms, max_text_tokens=1024):
+def legend_to_label(ds, raw, text, size):
+    """Read a map drawn in a colour legend's colours through the legend, at PIL size (W, H). Returns (label map,
+    {"legend_entries", "unmatched": phrases that name no dataset class, "legend_ids": class id or None per entry})."""
+    from utils.parsing_output import class_mask_from_raw_output
+    label = np.zeros(size[::-1], dtype=np.uint8)
+    parsed = class_mask_from_raw_output(raw.convert("RGB").resize(size, Image.NEAREST), text)
+    ids = [ds.legend_class_id(phrase) for phrase in parsed["gcg_phrases"]]
+    for index, cid in enumerate(ids):
+        if cid is not None:
+            label[parsed["class_mask"] == index] = cid
+    unmatched = [p for p, c in zip(parsed["gcg_phrases"], ids) if c is None]
+    return label, {"legend_entries": len(ids), "unmatched": unmatched, "legend_ids": ids}
+
+
+def legend_presence(ds, ids, gt_label):
+    """(true positives, false positives, false negatives) of the classes a legend names, against the evaluated
+    classes present in the ground truth."""
+    pred = {c for c in ids if c is not None}
+    gt = {int(c) for c in np.unique(gt_label)} & set(ds.eval_ids)
+    return len(pred & gt), len(pred - gt), len(gt - pred)
+
+
+def segment_with_legend(model, ds, photo, seed, params, transforms, max_text_tokens=1024, gt_label=None):
     """Run the released model's generic-segmentation format (ds.legend_prompt(): colour legend text, then a mask in
     those colours) and decode the mask through the legend. Returns (raw map, label map at the photo's size, info)
-    with info = {"text", "legend_entries", "unmatched": legend phrases that name no dataset class}."""
-    from utils.parsing_output import class_mask_from_raw_output
+    with info = {"text", "legend_entries", "unmatched": legend phrases that name no dataset class}, plus the legend's
+    class presence counts (legend_tp/fp/fn) when gt_label is given."""
     out = model.generate(contents=[{"type": "image", "value": photo}, {"type": "text", "value": ds.legend_prompt()}],
                          mode="caption_generate", noise_seed=seed, return_intermediate_outputs=True,
                          max_think_token_n=max_text_tokens, **params, **transforms)
     text, raw = out.get("text") or "", out.get("image")
-    label = np.zeros(photo.size[::-1], dtype=np.uint8)
     if raw is None:
+        label = np.zeros(photo.size[::-1], dtype=np.uint8)
         return Image.new("RGB", photo.size), label, {"text": text, "legend_entries": 0, "unmatched": []}
     raw = raw.convert("RGB")
-    parsed = class_mask_from_raw_output(raw.resize(photo.size, Image.NEAREST), text)
-    unmatched = []
-    for index, phrase in enumerate(parsed["gcg_phrases"]):
-        cid = ds.legend_class_id(phrase)
-        if cid is None:
-            unmatched.append(phrase)
-        else:
-            label[parsed["class_mask"] == index] = cid
-    return raw, label, {"text": text, "legend_entries": len(parsed["gcg_phrases"]), "unmatched": unmatched}
+    label, info = legend_to_label(ds, raw, text, photo.size)
+    if gt_label is not None:
+        info.update(zip(("legend_tp", "legend_fp", "legend_fn"), legend_presence(ds, info["legend_ids"], gt_label)))
+    del info["legend_ids"]
+    return raw, label, {"text": text, **info}
+
+
+def symm_legend_text(flow, ds, photo, args, key=None, gt_label=None, conditional=False):
+    """Colour legend for segmenting a photo with a symm_legend model: the ground truth with --oracle_legend, else
+    generated from the ViT prefix (conditional: from the photo's VAE + ViT prefix, as an img2palette_legend model
+    writes it). With --legend_cache and a key, a generated legend is stored and reused."""
+    if args.oracle_legend:
+        return ds.legend_map(gt_label)[1]
+    path = os.path.join(args.legend_cache, f"{key}.txt") if args.legend_cache and key is not None else None
+    if path and os.path.exists(path):
+        with open(path) as f:
+            return f.read()
+    max_tokens = getattr(args, "max_text_tokens", 1024)
+    text = (flow.generate_conditional_legend(photo, ds.legend_prompt(), max_tokens) if conditional else
+            flow.generate_legend(photo, ds.symm_legend_prompt(), max_tokens))
+    if path:
+        os.makedirs(args.legend_cache, exist_ok=True)
+        with open(path + ".tmp", "w") as f:
+            f.write(text)
+        os.replace(path + ".tmp", path)
+    return text
+
+
+def segment_symm_legend(flow, ds, photo, seed, args, key=None, gt_label=None):
+    """Segment with a symm_legend model: the colour legend first, then the joint flow, read through the legend (or
+    through a slot decoder, train_seg_decoder.py --legend). Returns (raw map, label map at the photo's size, info) as
+    segment_with_legend. key: the photo's dataset key, for --legend_cache (None for photos that are not the
+    dataset's, e.g. generated ones)."""
+    if args.symm_no_vit and not args.oracle_legend:
+        raise ValueError("--symm_no_vit with --format legend needs --oracle_legend: the legend is read from the ViT prefix")
+    text = symm_legend_text(flow, ds, photo, args, key, gt_label)
+    kwargs = dict(seed=seed, num_steps=args.symm_seg_steps, use_vit=not args.symm_no_vit,
+                  recompute_known=args.symm_recompute_known, legend=text)
+    if flow.decoder is None:
+        raw = flow.segment(photo, ds.symm_legend_prompt(), **kwargs).convert("RGB")
+        label, info = legend_to_label(ds, raw, text, photo.size)
+    else:
+        latent, shape = flow.segment_latent(photo, ds.symm_legend_prompt(), **kwargs)
+        label, info = decode_legend_slots(flow, ds, latent, shape, photo.size, text)
+        raw = Image.fromarray(ds.palette[label])
+    if gt_label is not None:
+        info.update(zip(("legend_tp", "legend_fp", "legend_fn"), legend_presence(ds, info["legend_ids"], gt_label)))
+    del info["legend_ids"]
+    return raw, label, {"text": text, **info}
+
+
+def segment_legend_conditional(flow, ds, photo, seed, args, key=None, gt_label=None):
+    """The one-step control for a slot decoder on a model trained on img2palette_legend (v4): its own legend from the
+    photo prefix, then one step from noise with no guidance, read by the decoder through the legend."""
+    text = symm_legend_text(flow, ds, photo, args, key, gt_label, conditional=True)
+    latent, shape = flow.conditional_latent(photo, ds.legend_prompt(), seed, legend=text)
+    label, info = decode_legend_slots(flow, ds, latent, shape, photo.size, text)
+    if gt_label is not None:
+        info.update(zip(("legend_tp", "legend_fp", "legend_fn"), legend_presence(ds, info["legend_ids"], gt_label)))
+    del info["legend_ids"]
+    return Image.fromarray(ds.palette[label]), label, {"text": text, **info}
+
+
+def decode_legend_slots(flow, ds, latent, shape, size, text):
+    """Class ids through a slot decoder (train_seg_decoder.py --legend): slot 0 is background / unlabeled and slot k
+    the k-th legend entry. Slots past the legend's length are excluded."""
+    from utils import extract_ordered_caption_instances
+
+    phrases = [phrase for phrase, _ in extract_ordered_caption_instances(text)]
+    ids = [ds.legend_class_id(p) for p in phrases]
+    logits = decoder_logits(flow, latent, shape, size)
+    n = min(len(ids), logits.shape[1] - 1)
+    logits[:, n + 1:] = float("-inf")
+    lut = np.zeros(logits.shape[1], dtype=np.uint8)
+    lut[1: n + 1] = [c or 0 for c in ids[:n]]
+    label = lut[logits.argmax(1)[0].cpu().numpy()]
+    return label, {"legend_entries": len(ids), "unmatched": [p for p, c in zip(phrases, ids) if c is None],
+                   "legend_ids": ids}
+
+
+def presence_f1(logs):
+    """Micro precision, recall and F1 of legend class presence over records with legend_tp/fp/fn, or {}."""
+    logs = [l for l in logs if "legend_tp" in l]
+    if not logs:
+        return {}
+    tp, fp, fn = (sum(l[k] for l in logs) for k in ("legend_tp", "legend_fp", "legend_fn"))
+    precision, recall = tp / max(tp + fp, 1), tp / max(tp + fn, 1)
+    return {"legend_precision": precision, "legend_recall": recall,
+            "legend_f1": 2 * precision * recall / max(precision + recall, 1e-9)}
 
 
 def confusion(ds, gt, pred):

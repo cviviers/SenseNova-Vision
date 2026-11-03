@@ -1,0 +1,30 @@
+# Copyright 2026 SenseTime Group Inc. and/or its affiliates.
+# CelebAMask-HQ: photo and map on one symmetric flow, with the map in the colour-legend format of
+# img2palette_legend (mode symm_legend, docs/SYMMETRIC.md): the legend of the classes present follows the
+# prompt as text (loss only with the ViT prefix), and the map is drawn in the legend's colours. Needs
+# --timestep_shift 1.0. Evaluate with --symm --format legend.
+#   bash scripts/finetune_lora.sh data/configs/celebamask_hq/celebamask_symm_legend.yaml --output_dir results/symm/<run> \
+#       --timestep_shift 1.0 --init_adapter results/spike/celeba-lora-v4/final --quant nf4
+
+celebamask_multitask:
+  datasets:
+    celebamask_hq:
+      data_dir: /datasets/CelebAMask-HQ/CelebAMask-HQ
+      num_total_samples: 24183
+  split: train
+  mode_weights:
+    symm_legend: 1.0
+  symm_beta: 10            # map dequantization, 0-255 scale
+  symm_vit_prob: 0.5       # share of samples with the photo's ViT tokens as a clean prefix; 0 = pure symmetric flow
+  symm_endpoint_prob: 0.2  # share of samples at t = 0 or 1, where both tasks start; the rest is uniform
+  symm_text_dropout: 0.0   # share of samples without prompt and legend; > 0 allows text guidance at inference
+  image_transform_args:
+    image_stride: 16
+    max_image_size: 512
+    min_image_size: 512
+  vit_image_transform_args:
+    image_stride: 14
+    max_image_size: 518
+    min_image_size: 224
+  shuffle_seed: 0
+  weight: 1.0
