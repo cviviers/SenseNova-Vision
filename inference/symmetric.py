@@ -87,9 +87,15 @@ class SymmetricFlow:
             context = self.inferencer.update_context_text(prompt, context)
             return self.inferencer.gen_text(context, max_length=max_tokens, do_sample=False)
 
-    def _run(self, known, direction, prompt, shape, seed, num_steps, vit_image, recompute_known, legend=None):
+    def _run(self, known, direction, prompt, shape, seed, num_steps, vit_image, recompute_known, legend=None,
+             cfg_scale=1.0):
         context = self._context(prompt, vit_image, legend)
         query = self._query(context, shape, [SYMM_ROPE_IMAGE, context["ropes"][0]])
+        uncond = None
+        if cfg_scale != 1.0:  # the same query without prompt and legend (models trained with symm_text_dropout)
+            plain = self._context(None, vit_image)
+            uncond = {**self._query(plain, shape, [SYMM_ROPE_IMAGE, plain["ropes"][0]]),
+                      "past_key_values": plain["past_key_values"]}
         generator = torch.Generator(device="cpu").manual_seed(seed)
         created_noise = torch.randn(known.shape, generator=generator).to(self.device)
         known_noise = torch.randn(known.shape, generator=generator).to(self.device) if recompute_known else None
@@ -99,6 +105,8 @@ class SymmetricFlow:
             direction=direction,
             num_steps=num_steps,
             known_noise=known_noise,
+            cfg_scale=cfg_scale,
+            uncond=uncond,
             past_key_values=context["past_key_values"],
             **query,
         )
@@ -148,27 +156,33 @@ class SymmetricFlow:
             return state - noise_level * velocity, shape
 
     @torch.no_grad()
-    def segment_latent(self, photo, prompt, seed=0, num_steps=1, use_vit=True, recompute_known=False, legend=None):
-        """Predicted map latent tokens for a photo, and the (H, W) they decode to. legend: symm_legend models."""
+    def segment_latent(self, photo, prompt, seed=0, num_steps=1, use_vit=True, recompute_known=False, legend=None,
+                       cfg_scale=1.0):
+        """Predicted map latent tokens for a photo, and the (H, W) they decode to. legend: symm_legend models;
+        cfg_scale: text guidance (models trained with symm_text_dropout)."""
         with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             known, shape = self.encode(photo)
             latent = self._run(known, "segment", prompt, shape, seed, num_steps, photo if use_vit else None,
-                               recompute_known, legend)
+                               recompute_known, legend, cfg_scale)
         return latent, shape
 
     @torch.no_grad()
-    def segment(self, photo, prompt, seed=0, num_steps=1, use_vit=True, recompute_known=False, legend=None):
+    def segment(self, photo, prompt, seed=0, num_steps=1, use_vit=True, recompute_known=False, legend=None,
+                cfg_scale=1.0):
         """Colour-coded map as a PIL image, decoded by the VAE."""
-        latent, shape = self.segment_latent(photo, prompt, seed, num_steps, use_vit, recompute_known, legend)
+        latent, shape = self.segment_latent(photo, prompt, seed, num_steps, use_vit, recompute_known, legend,
+                                            cfg_scale)
         with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             return self.inferencer.decode_image(latent, shape)
 
     @torch.no_grad()
-    def synthesize(self, mask, prompt, seed=0, num_steps=25, beta=0.0, recompute_known=False, legend=None):
+    def synthesize(self, mask, prompt, seed=0, num_steps=25, beta=0.0, recompute_known=False, legend=None,
+                   cfg_scale=1.0):
         """Photo for a colour-coded map, as a PIL image. beta dequantizes the map as in training. legend: the map's
         colour legend (symm_legend models; the map must then be drawn in the legend's colours)."""
         mask = dequantize(mask, random.Random(seed), beta)
         with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             known, shape = self.encode(mask)
-            latent = self._run(known, "synthesize", prompt, shape, seed, num_steps, None, recompute_known, legend)
+            latent = self._run(known, "synthesize", prompt, shape, seed, num_steps, None, recompute_known, legend,
+                               cfg_scale)
             return self.inferencer.decode_image(latent, shape)

@@ -196,6 +196,9 @@ def add_model_args(parser):
                         help="--symm: compute the known stream at every step instead of integrating it.")
     parser.add_argument("--decoder", default=None,
                         help="--symm or one-step eval: segmentation decoder checkpoint (train/train_seg_decoder.py).")
+    parser.add_argument("--symm_cfg_scale", type=float, default=1.0,
+                        help="--symm: text guidance in both directions (1 = none); needs a model trained with "
+                             "symm_text_dropout > 0.")
     parser.add_argument("--oracle_legend", action="store_true",
                         help="--symm --format legend: use the ground-truth colour legend instead of generating one "
                              "(diagnostic: separates map quality from legend errors).")
@@ -284,7 +287,7 @@ def segment_symm(flow, ds, photo, seed, args):
     With --symm this is the symmetric flow. Without it (--decoder on a model trained on img2palette) it is the
     one-step conditional estimate, the control for the symmetric flow."""
     kwargs = dict(seed=seed, num_steps=args.symm_seg_steps, use_vit=not args.symm_no_vit,
-                  recompute_known=args.symm_recompute_known)
+                  recompute_known=args.symm_recompute_known, cfg_scale=args.symm_cfg_scale)
     if flow.decoder is None:
         raw = flow.segment(photo, ds.symm_prompt(), **kwargs).convert("RGB")
         label, off = palette_to_label(ds, raw, photo.size)
@@ -388,7 +391,7 @@ def segment_symm_legend(flow, ds, photo, seed, args, key=None, gt_label=None):
         raise ValueError("--symm_no_vit with --format legend needs --oracle_legend: the legend is read from the ViT prefix")
     text = symm_legend_text(flow, ds, photo, args, key, gt_label)
     kwargs = dict(seed=seed, num_steps=args.symm_seg_steps, use_vit=not args.symm_no_vit,
-                  recompute_known=args.symm_recompute_known, legend=text)
+                  recompute_known=args.symm_recompute_known, legend=text, cfg_scale=args.symm_cfg_scale)
     if flow.decoder is None:
         raw = flow.segment(photo, ds.symm_legend_prompt(), **kwargs).convert("RGB")
         label, info = legend_to_label(ds, raw, text, photo.size)

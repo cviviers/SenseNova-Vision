@@ -36,7 +36,9 @@ loss. Each modality keeps its own noise, so synthesis stays one-to-many.
 | Map dequantization (`symm_beta`) | Flat colours are perturbed with uniform noise before encoding. |
 | Learned stream identity (`StreamEmbedding`) | The photo is `c + u` and the map `c - u`, added to each token. A stream of pure noise has no content to tell what it should become: without this, training makes the model copy the clean stream at `t = 0`, even though the untrained warm start looks fine. It is saved in the adapter; `tools/export_full_checkpoint.py` and `tools/merge_lora.py` write it to `symm_embedding.safetensors`. |
 
-`--symm_image_weight` scales the photo stream's loss (default 0.5).
+`--symm_image_weight` scales the photo stream's loss (default 0.5). `symm_text_dropout` in the dataset YAML leaves out
+the prompt and legend together in that share of samples, which trains the text-free branch that guidance needs at
+inference (`--symm_cfg_scale`). The legend configs use 0.1.
 
 ## The legend variant (`symm_legend`)
 
@@ -95,6 +97,7 @@ python -m inference.benchmark.eval_seg_seg2img --dataset celebamask --adapter <d
 | `--symm_recompute_known` | Compute the known stream from its data at every step instead of integrating it |
 | `--symm_beta` | Map dequantization in synthesis (default: as in training) |
 | `--decoder <decoder.pt>` | Read the map through a segmentation decoder instead of the VAE |
+| `--symm_cfg_scale` | Text guidance on the created stream (1 = none); needs `symm_text_dropout` in training |
 
 For a one-step baseline of a conventional model: `--num_timesteps 2 --cfg_text_scale 1.0`.
 

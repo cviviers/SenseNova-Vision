@@ -173,11 +173,12 @@ def main():
             legend_map, legend, _ = ds.legend_map(label)
             beta = ds.symm_beta if args.symm_beta is None else args.symm_beta
             return flow.synthesize(legend_map, ds.symm_legend_prompt(), seed=seed, num_steps=args.symm_gen_steps,
-                                   beta=beta, recompute_known=args.symm_recompute_known, legend=legend)
+                                   beta=beta, recompute_known=args.symm_recompute_known, legend=legend,
+                                   cfg_scale=args.symm_cfg_scale)
         if args.symm:
             beta = ds.symm_beta if args.symm_beta is None else args.symm_beta
             return flow.synthesize(palette_map, ds.symm_prompt(), seed=seed, num_steps=args.symm_gen_steps, beta=beta,
-                                   recompute_known=args.symm_recompute_known)
+                                   recompute_known=args.symm_recompute_known, cfg_scale=args.symm_cfg_scale)
         return model.generate(contents=[{"type": "image", "value": palette_map},
                                         {"type": "text", "value": prompt_fn(label)}],
                               mode="edit", noise_seed=seed, **params, **transforms)

@@ -402,6 +402,26 @@ def check_legend_sampler(flow):
     assert flow.synthesize(mask, PROMPT, seed=0, num_steps=2, beta=10, legend=LEGEND).size == (SIZE, SIZE)
 
 
+def check_guidance(flow):
+    """Text guidance: scale 1 is the unguided path exactly; scale 0 follows the path without prompt and legend;
+    other scales move the created stream; both directions run."""
+    photo, mask = make_images()
+    base = dict(seed=5, num_steps=2, use_vit=True)
+
+    def run(prompt, **kwargs):  # the VAE samples its posterior: same torch seed for every call
+        torch.manual_seed(0)
+        return flow.segment_latent(photo, prompt, **base, **kwargs)[0]
+
+    plain = run(PROMPT, legend=LEGEND)
+    assert torch.equal(plain, run(PROMPT, legend=LEGEND, cfg_scale=1.0))
+    no_text, zero = run(None), run(PROMPT, legend=LEGEND, cfg_scale=0.0)
+    diff = ((zero - no_text).norm() / no_text.norm()).item()
+    assert diff < 0.05, f"scale 0 must follow the text-free branch ({diff:.4f})"
+    guided = run(PROMPT, legend=LEGEND, cfg_scale=3.0)
+    assert not torch.allclose(guided, plain)
+    assert flow.synthesize(mask, PROMPT, seed=0, num_steps=2, legend=LEGEND, cfg_scale=2.0).size == (SIZE, SIZE)
+
+
 def check_guards():
     assert uses_symm({"a": {"mode_weights": {"symm": 1.0}}})
     assert uses_symm({"a": {"mode_weights": {"symm_legend": 1.0, "seg2img": 0}}})
@@ -460,6 +480,8 @@ def main():
     print("sampler ok: segmentation and synthesis, integrated and recomputed known stream")
     check_legend_sampler(flow)
     print("legend sampler ok: legend generation, both directions with a legend")
+    check_guidance(flow)
+    print("guidance ok: scale 1 unchanged, scale 0 text-free, both directions")
     check_decoder(model, flow)
     print("decoder ok: unpacking, resolution, loss, empty labels, checkpoint")
     print("ALL PASSED")

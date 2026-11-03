@@ -831,6 +831,8 @@ class Bagel(PreTrainedModel):
         packed_key_value_indexes: torch.LongTensor,
         num_steps: int = 1,
         known_noise: Optional[torch.Tensor] = None,
+        cfg_scale: float = 1.0,
+        uncond: Optional[dict] = None,
     ):
         """Euler integration of the symmetric flow; returns the created stream's latent tokens.
 
@@ -839,6 +841,10 @@ class Bagel(PreTrainedModel):
         the photo is known, the map is created) or "synthesize" (t from 1 to 0: the map is known, the photo is
         created). With known_noise, the known stream is computed from its data and that noise at every step instead
         of being integrated.
+
+        Text guidance (cfg_scale != 1 with uncond, the query inputs and past_key_values of the same query without
+        the prompt and legend; needs a model trained with symm_text_dropout): the created stream's velocity becomes
+        v_uncond + cfg_scale * (v_cond - v_uncond). The known stream keeps the conditional velocity.
         """
         if direction not in ("segment", "synthesize"):
             raise ValueError(f"unknown direction {direction!r}")
@@ -849,24 +855,22 @@ class Bagel(PreTrainedModel):
         grid = torch.linspace(0.0, 1.0, num_steps + 1) if segment else torch.linspace(1.0, 0.0, num_steps + 1)
         grid = grid.tolist()
         stream_ids = torch.cat([torch.full((num_tokens,), 1), torch.full((num_tokens,), 2)]).to(device)
+        cond = dict(packed_vae_token_indexes=packed_vae_token_indexes, packed_vae_position_ids=packed_vae_position_ids,
+                    packed_text_ids=packed_text_ids, packed_text_indexes=packed_text_indexes,
+                    packed_position_ids=packed_position_ids, packed_indexes=packed_indexes,
+                    packed_seqlens=packed_seqlens, key_values_lens=key_values_lens, past_key_values=past_key_values,
+                    packed_key_value_indexes=packed_key_value_indexes)
+        guided = uncond is not None and cfg_scale != 1.0
+        created = slice(num_tokens, None) if segment else slice(0, num_tokens)
         for t, t_next in zip(grid[:-1], grid[1:]):
             noise_level = torch.cat([torch.full((num_tokens,), t), torch.full((num_tokens,), 1.0 - t)]).to(device)
-            velocity = self._forward_flow(
-                x_t=torch.cat([image, mask], dim=0),
-                timestep=noise_level,
-                packed_vae_token_indexes=packed_vae_token_indexes,
-                packed_vae_position_ids=packed_vae_position_ids,
-                packed_text_ids=packed_text_ids,
-                packed_text_indexes=packed_text_indexes,
-                packed_position_ids=packed_position_ids,
-                packed_indexes=packed_indexes,
-                packed_seqlens=packed_seqlens,
-                key_values_lens=key_values_lens,
-                past_key_values=past_key_values,
-                packed_key_value_indexes=packed_key_value_indexes,
-                per_token_timesteps=True,
-                packed_stream_ids=stream_ids,
-            ).to(image.dtype)
+            x_t = torch.cat([image, mask], dim=0)
+            velocity = self._forward_flow(x_t=x_t, timestep=noise_level, per_token_timesteps=True,
+                                          packed_stream_ids=stream_ids, **cond).to(image.dtype)
+            if guided:
+                v_uncond = self._forward_flow(x_t=x_t, timestep=noise_level, per_token_timesteps=True,
+                                              packed_stream_ids=stream_ids, **uncond).to(image.dtype)
+                velocity[created] = v_uncond[created] + cfg_scale * (velocity[created] - v_uncond[created])
             image = image + velocity[:num_tokens] * (t_next - t)  # noise level moves by +dt ...
             mask = mask - velocity[num_tokens:] * (t_next - t)    # ... and by -dt on the map's clock
             if known_noise is not None:
