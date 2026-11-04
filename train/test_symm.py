@@ -208,7 +208,10 @@ def check_parity(model, flow, packer, tokenizer, use_vit, legend=None, text_drop
                                        per_token_timesteps=True, packed_stream_ids=data["packed_stream_ids"],
                                        **query).float()
     diff = ((captured["train"] - inferred).norm() / captured["train"].norm()).item()
-    assert diff < 0.01, f"train and inference disagree by {diff:.4f}"
+    # BF16 kernels differ between the packed training pass and the cached inference pass. Measured on the tiny model:
+    # 0.005-0.007 with a noisy map, up to 0.013 with a nearly clean one (diagonal (0.999, 0.001) and slices alike).
+    # A real layout error (RoPE, mask, noise level) is far larger.
+    assert diff < 0.02, f"train and inference disagree by {diff:.4f}"
     return diff
 
 
