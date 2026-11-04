@@ -34,6 +34,8 @@ LARGE_GROUPS = ['recon3d_sft', 'recon3d_jsonl_sft']
 # Symmetric flow: t stays inside (0, 1), because Bagel.forward computes the loss on tokens whose noise level
 # is above 0 and a stream at exactly 0 would drop rows that mse_loss_indexes keeps.
 SYMM_T_EPS = 1e-3
+# A stream below this noise level is at its clean endpoint: its target (noise - data) is mostly noise it cannot see.
+SYMM_CLEAN_LEVEL = 2 * SYMM_T_EPS
 
 
 def sample_symm_logit_t(endpoint_prob=0.0):
@@ -47,6 +49,24 @@ def sample_symm_logit_t(endpoint_prob=0.0):
     else:
         t = np.random.uniform(SYMM_T_EPS, 1 - SYMM_T_EPS)
     return float(np.log(t) - np.log1p(-t))
+
+
+def sample_symm_logit_pair(endpoint_prob=0.0, cond_prob=0.0, cond_photo_share=0.5):
+    """Logits of the photo's and the map's noise levels for one symm sample.
+
+    Usually the diagonal of the symmetric flow: one t from sample_symm_logit_t, the photo at t and the map at 1 - t.
+    With probability cond_prob a conditional slice instead: one stream clean (noise level SYMM_T_EPS) and the other at
+    its own uniform level, the photo clean in cond_photo_share of them (segmentation) and the map clean in the rest
+    (synthesis). Those are the states a sampler meets when it holds the known stream clean at every step
+    (Bagel.generate_symmetric with hold_known). With cond_prob 0 nothing extra is drawn, so the diagonal's draws are
+    unchanged.
+    """
+    if cond_prob > 0 and np.random.random() < cond_prob:
+        clean = float(np.log(SYMM_T_EPS) - np.log1p(-SYMM_T_EPS))
+        free = sample_symm_logit_t(0.0)
+        return (clean, free) if np.random.random() < cond_photo_share else (free, clean)
+    photo = sample_symm_logit_t(endpoint_prob)
+    return photo, -photo  # sigmoid(-x) = 1 - sigmoid(x): the map's noise level is 1 - t
 
 class DataConfig:
     def __init__(
@@ -509,11 +529,13 @@ class PackedDataset(torch.utils.data.IterableDataset):
                     sequence_status['mse_loss_indexes'].extend(range(curr, curr + num_img_tokens))
                     if split_start:
                         if 'symm_stream' in item:
-                            timestep = sample_symm_logit_t(item.get('symm_endpoint_prob', 0.0))
+                            timestep, symm_mask_timestep = sample_symm_logit_pair(
+                                item.get('symm_endpoint_prob', 0.0), item.get('symm_cond_prob', 0.0),
+                                item.get('symm_cond_photo_share', 0.5))
                         else:
                             timestep = np.random.randn()
                     elif item.get('symm_stream') == 'mask':
-                        timestep = -timestep  # sigmoid(-x) = 1 - sigmoid(x): the mask's noise level is 1 - t
+                        timestep = symm_mask_timestep  # drawn with the photo's: 1 - t, or its own level in a slice
                 else:
                     timestep = float('-inf')
 

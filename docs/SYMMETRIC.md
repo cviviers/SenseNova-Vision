@@ -40,6 +40,16 @@ loss. Each modality keeps its own noise, so synthesis stays one-to-many.
 the prompt and legend together in that share of samples, which trains the text-free branch that guidance needs at
 inference (`--symm_cfg_scale`). The legend configs use 0.1.
 
+`symm_cond_prob` in the dataset YAML moves that share of samples off the diagonal into conditional slices: one stream
+clean and the other at its own uniform noise level, with the photo clean in `symm_cond_photo_share` of them. These are
+the states the sampler meets with `--symm_hold_known`, which keeps the known stream clean at every step, as a
+conditional model does. On the diagonal alone, the photo has to be noised while the map forms. Train such configs with
+`--symm_clean_weight 0`. A stream at its clean endpoint has a target (`noise - data`) that is mostly noise it cannot
+see, so its rows only add gradient noise. The weight also applies to the diagonal's endpoint samples, and
+`train_log.jsonl` reports those rows as `image_clean` and `mask_clean`, outside the t bins. See
+[spike/celebamask_symm_legend_cond.yaml](../data/configs/spike/celebamask_symm_legend_cond.yaml) and
+[spike/cocostuff_symm_legend_cond.yaml](../data/configs/spike/cocostuff_symm_legend_cond.yaml).
+
 ## The legend variant (`symm_legend`)
 
 ```
@@ -102,6 +112,7 @@ python -m inference.benchmark.eval_seg_seg2img --dataset celebamask --adapter <d
 | `--symm_seg_steps`, `--symm_gen_steps` | Number of steps in each direction |
 | `--symm_no_vit` | Segment without the ViT prefix |
 | `--symm_recompute_known` | Compute the known stream from its data at every step instead of integrating it |
+| `--symm_hold_known` | Keep the known stream clean at every step (models trained with `symm_cond_prob`) |
 | `--symm_beta` | Map dequantization in synthesis (default: as in training) |
 | `--decoder <decoder.pt>` | Read the map through a segmentation decoder instead of the VAE |
 | `--symm_cfg_scale` | Text guidance on the created stream (1 = none); needs `symm_text_dropout` in training |
@@ -145,6 +156,13 @@ once (`--cache_predicted` per image, plus the ground truth) and trains from memo
 bash scripts/spike_submit.sh <run> decoder celebamask --flow symm --legend --adapter /data/runs/<lora run>/final \
   --cache_dir /data/runs/<run>/cache --size S
 ```
+
+## Architecture animation
+
+[Watch the animation](architecture_animation/exports/sensenova-to-symmetric-flow.mp4) or open the
+[offline player](architecture_animation/animation.html) for the transition from the original conditional
+legend-segmentation / synthesis paths to `symm_legend`. The [storyboard and code trace](architecture_animation/README.md)
+explain the complementary noise schedules, shared legend, and optional spatial alignment and slot decoder.
 
 ## Checks
 

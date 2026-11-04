@@ -84,7 +84,8 @@ class SegMultiTaskDataset(DistributedIterableDataset):
 
     def __init__(self, dataset_name, transform, tokenizer, vit_transform, local_rank=0, world_size=1,
                  num_workers=8, data_status=None, mode_weights=None, shuffle_seed=0, symm_beta=0.0,
-                 symm_vit_prob=0.5, symm_endpoint_prob=0.2, symm_text_dropout=0.0):
+                 symm_vit_prob=0.5, symm_endpoint_prob=0.2, symm_text_dropout=0.0, symm_cond_prob=0.0,
+                 symm_cond_photo_share=0.5):
         super().__init__(dataset_name, local_rank, world_size, num_workers)
         self.transform = transform
         self.tokenizer = tokenizer
@@ -96,6 +97,10 @@ class SegMultiTaskDataset(DistributedIterableDataset):
         self.symm_endpoint_prob = symm_endpoint_prob  # share of symm samples at t = 0 or 1 instead of uniform t
         # share of symm samples without the prompt and legend, so that inference can use text guidance
         self.symm_text_dropout = symm_text_dropout
+        # share of symm samples that keep one stream clean while the other has its own noise level (conditional
+        # slices, for sampling with the known stream held clean); the photo is the clean one in cond_photo_share
+        self.symm_cond_prob = symm_cond_prob
+        self.symm_cond_photo_share = symm_cond_photo_share
         weights = dict(mode_weights or self.DEFAULT_MODE_WEIGHTS)
         unknown = set(weights) - set(self.MODES)
         if unknown:
@@ -151,7 +156,9 @@ class SegMultiTaskDataset(DistributedIterableDataset):
                 sample = self._add_text(sample, legend, need_loss=use_vit, enable_cfg=False)
         sample = self._add_image(sample, photo, need_loss=True, need_vae=False, need_vit=False)
         sample["sequence_plan"][-1].update(split_start=True, split_end=False, symm_stream="image",
-                                           rope_id=SYMM_ROPE_IMAGE, symm_endpoint_prob=self.symm_endpoint_prob)
+                                           rope_id=SYMM_ROPE_IMAGE, symm_endpoint_prob=self.symm_endpoint_prob,
+                                           symm_cond_prob=self.symm_cond_prob,
+                                           symm_cond_photo_share=self.symm_cond_photo_share)
         sample = self._add_image(sample, dequantize(mask, rng, self.symm_beta), need_loss=True, need_vae=False,
                                  need_vit=False)
         sample["sequence_plan"][-1].update(split_start=False, split_end=True, symm_stream="mask")

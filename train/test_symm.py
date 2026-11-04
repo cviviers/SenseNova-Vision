@@ -15,7 +15,7 @@ import torch
 from PIL import Image
 
 from data.data_utils import get_flattened_position_ids_extrapolate
-from data.dataset_base import SYMM_T_EPS, PackedDataset
+from data.dataset_base import SYMM_CLEAN_LEVEL, SYMM_T_EPS, PackedDataset, sample_symm_logit_t
 from data.seg_multitask import (
     SYMM_ROPE_IMAGE,
     SYMM_ROPE_TEXT,
@@ -57,6 +57,8 @@ def make_dataset(tokenizer, vit_prob, beta=10.0):
     dataset.symm_vit_prob = vit_prob
     dataset.symm_endpoint_prob = 0.0
     dataset.symm_text_dropout = 0.0
+    dataset.symm_cond_prob = 0.0
+    dataset.symm_cond_photo_share = 0.5
     return dataset
 
 
@@ -159,8 +161,9 @@ def make_flow(model, vae, tokenizer, new_token_ids):
     return SymmetricFlow(wrapper)
 
 
-def check_parity(model, flow, packer, tokenizer, use_vit, legend=None, text_dropped=False):
-    """The inference path (cached prefix + joint query) must match the training path on identical inputs."""
+def check_parity(model, flow, packer, tokenizer, use_vit, legend=None, text_dropped=False, levels=(0.3, 0.7)):
+    """The inference path (cached prefix + joint query) must match the training path on identical inputs. levels: the
+    photo's and the map's noise levels (t and 1 - t on the diagonal; one clean stream in a conditional slice)."""
     photo, mask = make_images()
     dataset = make_dataset(tokenizer, 1.0 if use_vit else 0.0, beta=0.0)
     dataset.symm_text_dropout = 1.0 if text_dropped else 0.0
@@ -168,10 +171,10 @@ def check_parity(model, flow, packer, tokenizer, use_vit, legend=None, text_drop
     data = to_device(pack(packer, [sample]))
     data.pop("ce_loss_weights", None)
     images = data.pop("padded_images")
-    t = 0.3
-    logit = math.log(t / (1 - t))
+    logit = [math.log(level / (1 - level)) for level in levels]
     num_tokens = (SIZE // 16) ** 2
-    data["packed_timesteps"] = torch.cat([torch.full((num_tokens,), logit), torch.full((num_tokens,), -logit)]).to(DEVICE)
+    data["packed_timesteps"] = torch.cat([torch.full((num_tokens,), logit[0]),
+                                          torch.full((num_tokens,), logit[1])]).to(DEVICE)
     data["padded_latent"] = model.vae_for_test.encode(images.to(DEVICE, torch.bfloat16)).float()
 
     captured, randn_like = {}, torch.randn_like
@@ -192,7 +195,7 @@ def check_parity(model, flow, packer, tokenizer, use_vit, legend=None, text_drop
         zx, shape = flow.encode(photo)
         zm, _ = flow.encode(mask)
         clean = torch.cat([zx, zm])
-        noise_level = torch.cat([torch.full((num_tokens,), t), torch.full((num_tokens,), 1 - t)]).to(DEVICE)
+        noise_level = torch.cat([torch.full((num_tokens,), levels[0]), torch.full((num_tokens,), levels[1])]).to(DEVICE)
         noisy = (1 - noise_level[:, None]) * clean + noise_level[:, None] * captured["noise"].float()
         context = flow._context(None if text_dropped else PROMPT, photo if use_vit else None, legend)
         query = model.prepare_vae_latent(context["kv_lens"] + [0], [SYMM_ROPE_IMAGE, context["ropes"][0]], [shape, shape],
@@ -302,6 +305,75 @@ def check_endpoints(packer, tokenizer):
     level = np.array(level)
     low, high = (level < 2 * SYMM_T_EPS).mean(), (level > 1 - 2 * SYMM_T_EPS).mean()
     assert 0.17 < low < 0.33 and 0.17 < high < 0.33, (low, high)
+
+
+def check_cond_slices(packer, tokenizer):
+    """symm_cond_prob: one stream clean and the other at its own level, the photo clean in cond_photo_share of them;
+    with symm_cond_prob 0 the diagonal's random draws are unchanged."""
+    photo, mask = make_images()
+    num_tokens = (SIZE // 16) ** 2
+    dataset = make_dataset(tokenizer, 0.0, beta=0.0)
+    dataset.symm_cond_prob = 1.0
+    photo_clean = 0
+    for seed in range(300):
+        data = pack(packer, [dataset.build_symm_sample(random.Random(seed), photo, PROMPT, mask)])
+        level = torch.sigmoid(data["packed_timesteps"])
+        image, mask_level = level[0].item(), level[-1].item()
+        assert level[:num_tokens].unique().numel() == 1 and level[num_tokens:].unique().numel() == 1
+        clean = abs(image - SYMM_T_EPS) < 1e-6, abs(mask_level - SYMM_T_EPS) < 1e-6  # the free one is uniform
+        assert clean[0] != clean[1], "exactly one stream is held clean"
+        photo_clean += clean[0]
+    assert 0.38 < photo_clean / 300 < 0.62, photo_clean
+    dataset.symm_cond_prob, dataset.symm_endpoint_prob = 0.0, 0.3
+    for seed in range(20):
+        np.random.seed(seed)
+        data = pack(packer, [dataset.build_symm_sample(random.Random(seed), photo, PROMPT, mask)])
+        np.random.seed(seed)
+        assert abs(data["packed_timesteps"][0].item() - sample_symm_logit_t(0.3)) < 1e-5, "diagonal draws changed"
+
+
+def check_clean_weights(packer, tokenizer):
+    """symm_row_weights: photo rows at image_weight, rows of a clean stream at clean_weight; per_stream_losses logs
+    clean rows apart from the t bins."""
+    photo, mask = make_images()
+    num_tokens = (SIZE // 16) ** 2
+    dataset = make_dataset(tokenizer, 0.0, beta=0.0)
+    data = pack(packer, [dataset.build_symm_sample(random.Random(i), photo, PROMPT, mask) for i in range(2)])
+    logit = lambda level: math.log(level / (1 - level))
+    levels = (0.3, 0.7, SYMM_T_EPS, 0.6)  # a diagonal sample, then a slice with the photo clean
+    data["packed_timesteps"] = torch.cat([torch.full((num_tokens,), logit(v)) for v in levels])
+    groups = ["symm", "symm"]
+    assert symm_row_weights(data, groups, 1.0, 1.0) is None
+    weights = symm_row_weights(data, groups, 0.5, 0.0)
+    expected = torch.cat([torch.full((num_tokens,), w) for w in (0.5, 1.0, 0.0, 1.0)])
+    assert torch.equal(weights.float(), expected), "photo 0.5, map 1, clean photo 0"
+    assert torch.equal(symm_row_weights(data, groups, 0.5, 1.0).float(),
+                       torch.cat([torch.full((num_tokens,), w) for w in (0.5, 1.0, 0.5, 1.0)]))
+    streams = per_stream_losses({"mse": torch.ones(4 * num_tokens, 4)}, data, groups)
+    assert streams["image_clean"]["mse"][1] == num_tokens and "mask_clean" not in streams
+    assert streams["image_t0.2"]["mse"][1] == num_tokens and streams["mask_t0.2"]["mse"][1] == num_tokens
+    assert streams["mask_t0.4"]["mse"][1] == num_tokens, "the slice's map at level 0.6 sits at t = 0.4"
+
+
+def check_hold_known(flow):
+    """hold_known keeps the known stream clean: one step equals the plain sampler (both start with a clean photo),
+    more steps differ; it excludes known_noise; synthesis runs."""
+    photo, mask = make_images()
+
+    def run(**kwargs):  # the VAE samples its posterior: same torch seed for every call
+        torch.manual_seed(0)
+        return flow.segment_latent(photo, PROMPT, seed=4, use_vit=True, legend=LEGEND, **kwargs)[0]
+
+    assert torch.equal(run(num_steps=1), run(num_steps=1, hold_known=True))
+    assert not torch.allclose(run(num_steps=3), run(num_steps=3, hold_known=True))
+    try:
+        run(num_steps=2, hold_known=True, recompute_known=True)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("hold_known with recompute_known must raise")
+    assert flow.synthesize(mask, PROMPT, seed=0, num_steps=2, legend=LEGEND, hold_known=True,
+                           cfg_scale=2.0).size == (SIZE, SIZE)
 
 
 def check_legend_sample(packer, tokenizer, vit_prob):
@@ -512,6 +584,10 @@ def main():
     print("packing ok: attention mask, RoPE ids, shared positions, noise levels t and 1 - t")
     check_endpoints(packer, tokenizer)
     print("endpoint sampling ok")
+    check_cond_slices(packer, tokenizer)
+    print("conditional slices ok: one clean stream, photo share, diagonal draws unchanged without them")
+    check_clean_weights(packer, tokenizer)
+    print("clean-endpoint weights ok: photo weight, clean rows, per-stream logs")
     check_stream_embedding(model, packer, tokenizer)
     print("stream identity ok: ids, signs, restore, legacy batches untouched")
     check_training_step(model, packer, tokenizer)
@@ -536,12 +612,17 @@ def main():
     for use_vit in (False, True):
         diff = check_parity(model, flow, packer, tokenizer, use_vit, text_dropped=True)
         print(f"parity ok without text, ViT {use_vit}: {diff:.5f} relative difference")
+    for levels in ((SYMM_T_EPS, 0.6), (0.4, SYMM_T_EPS)):
+        diff = check_parity(model, flow, packer, tokenizer, True, LEGEND, levels=levels)
+        print(f"parity ok in a conditional slice, levels {levels}: {diff:.5f} relative difference")
     check_sampler(model, flow)
     print("sampler ok: segmentation and synthesis, integrated and recomputed known stream")
     check_legend_sampler(flow)
     print("legend sampler ok: legend generation, both directions with a legend")
     check_guidance(flow)
     print("guidance ok: scale 1 unchanged, scale 0 text-free, both directions")
+    check_hold_known(flow)
+    print("hold-known sampler ok: one step unchanged, known stream held, exclusive with recompute")
     check_decoder(model, flow)
     print("decoder ok: unpacking, resolution, loss, empty labels, checkpoint")
     print("ALL PASSED")

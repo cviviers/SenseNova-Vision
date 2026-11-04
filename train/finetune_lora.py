@@ -111,6 +111,10 @@ class FinetuneArguments:
     mse_weight: float = field(default=1.0)
     timestep_shift: float = field(default=4.0, metadata={"help": "Must be 1.0 for configs with the symm mode."})
     symm_image_weight: float = field(default=0.5, metadata={"help": "Mode symm: weight of the photo stream's loss."})
+    symm_clean_weight: float = field(
+        default=1.0,
+        metadata={"help": "Symm modes: weight of the loss of a stream at its clean endpoint, whose target is mostly "
+                          "noise it cannot see; 0 = no loss there (use 0 with symm_cond_prob > 0)."})
     symm_embedding: bool = field(default=True, metadata={"help": "Mode symm: train the streams' learned identity."})
     irepa_weight: float = field(
         default=0.0,
@@ -462,7 +466,8 @@ def main():
                 with torch.no_grad(), torch.amp.autocast("cuda", enabled=False):
                     data["padded_latent"] = _encode_padded_images_in_chunks(vae_model, data.pop("padded_images"))
             loss_dict = model(**data, **({"irepa_layer": args.irepa_layer} if align else {}))
-            loss, logs = compute_loss(loss_dict, args, symm_row_weights(data, groups, args.symm_image_weight))
+            loss, logs = compute_loss(loss_dict, args, symm_row_weights(data, groups, args.symm_image_weight,
+                                                                    args.symm_clean_weight))
             if align:
                 irepa_loss, irepa_logs = irepa(loss_dict.pop("irepa_hidden"), images,
                                                data["patchified_vae_latent_shapes"], data["packed_stream_ids"])

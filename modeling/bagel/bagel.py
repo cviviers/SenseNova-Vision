@@ -845,6 +845,7 @@ class Bagel(PreTrainedModel):
         known_noise: Optional[torch.Tensor] = None,
         cfg_scale: float = 1.0,
         uncond: Optional[dict] = None,
+        hold_known: bool = False,
     ):
         """Euler integration of the symmetric flow; returns the created stream's latent tokens.
 
@@ -852,7 +853,9 @@ class Bagel(PreTrainedModel):
         and the map's 1 - t, and the model predicts noise - data for each. `direction` is "segment" (t from 0 to 1:
         the photo is known, the map is created) or "synthesize" (t from 1 to 0: the map is known, the photo is
         created). With known_noise, the known stream is computed from its data and that noise at every step instead
-        of being integrated.
+        of being integrated. With hold_known, the known stream stays clean (noise level 0) at every step while the
+        created one runs its full schedule, as in a conditional model; this needs a model trained on conditional
+        slices (symm_cond_prob > 0), because the diagonal never shows a clean stream next to a half-noised one.
 
         Text guidance (cfg_scale != 1 with uncond, the query inputs and past_key_values of the same query without
         the prompt and legend; needs a model trained with symm_text_dropout): the created stream's velocity becomes
@@ -860,6 +863,8 @@ class Bagel(PreTrainedModel):
         """
         if direction not in ("segment", "synthesize"):
             raise ValueError(f"unknown direction {direction!r}")
+        if hold_known and known_noise is not None:
+            raise ValueError("hold_known and known_noise are alternative treatments of the known stream")
         segment = direction == "segment"
         num_tokens = known_latent.shape[0]
         device = known_latent.device
@@ -875,7 +880,10 @@ class Bagel(PreTrainedModel):
         guided = uncond is not None and cfg_scale != 1.0
         created = slice(num_tokens, None) if segment else slice(0, num_tokens)
         for t, t_next in zip(grid[:-1], grid[1:]):
-            noise_level = torch.cat([torch.full((num_tokens,), t), torch.full((num_tokens,), 1.0 - t)]).to(device)
+            image_level = 0.0 if hold_known and segment else t
+            mask_level = 0.0 if hold_known and not segment else 1.0 - t
+            noise_level = torch.cat([torch.full((num_tokens,), image_level),
+                                     torch.full((num_tokens,), mask_level)]).to(device)
             x_t = torch.cat([image, mask], dim=0)
             velocity = self._forward_flow(x_t=x_t, timestep=noise_level, per_token_timesteps=True,
                                           packed_stream_ids=stream_ids, **cond).to(image.dtype)
@@ -883,8 +891,10 @@ class Bagel(PreTrainedModel):
                 v_uncond = self._forward_flow(x_t=x_t, timestep=noise_level, per_token_timesteps=True,
                                               packed_stream_ids=stream_ids, **uncond).to(image.dtype)
                 velocity[created] = v_uncond[created] + cfg_scale * (velocity[created] - v_uncond[created])
-            image = image + velocity[:num_tokens] * (t_next - t)  # noise level moves by +dt ...
-            mask = mask - velocity[num_tokens:] * (t_next - t)    # ... and by -dt on the map's clock
+            if not (hold_known and segment):
+                image = image + velocity[:num_tokens] * (t_next - t)  # noise level moves by +dt ...
+            if not (hold_known and not segment):
+                mask = mask - velocity[num_tokens:] * (t_next - t)    # ... and by -dt on the map's clock
             if known_noise is not None:
                 if segment:
                     image = (1.0 - t_next) * known_latent + t_next * known_noise

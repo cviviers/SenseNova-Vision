@@ -9,3 +9,4 @@ jsonl_generate
 output/
 results/
 docker/.env
+docs/architecture_animation/*

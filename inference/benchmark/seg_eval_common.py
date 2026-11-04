@@ -194,6 +194,8 @@ def add_model_args(parser):
                         help="--symm: map dequantization in synthesis, 0-255 scale (default: as in training).")
     parser.add_argument("--symm_recompute_known", action="store_true",
                         help="--symm: compute the known stream at every step instead of integrating it.")
+    parser.add_argument("--symm_hold_known", action="store_true",
+                        help="--symm: keep the known stream clean at every step (models trained with symm_cond_prob).")
     parser.add_argument("--decoder", default=None,
                         help="--symm or one-step eval: segmentation decoder checkpoint (train/train_seg_decoder.py).")
     parser.add_argument("--symm_cfg_scale", type=float, default=1.0,
@@ -275,6 +277,9 @@ def symm_flow(model, ds, args):
 
     flow = SymmetricFlow(model, ds.vae_transform, ds.vit_transform)
     flow.decoder = None
+    if getattr(args, "symm", False) and flow.model.symm_embedding is None:
+        print("[eval] WARNING: --symm but no stream identity was loaded (adapter or symm_embedding.safetensors); "
+              "the photo and map streams differ only by position and noise level", flush=True)
     if getattr(args, "decoder", None):
         from modeling.seg_decoder import load_seg_decoder
         flow.decoder = load_seg_decoder(args.decoder, flow.device)
@@ -287,7 +292,8 @@ def segment_symm(flow, ds, photo, seed, args):
     With --symm this is the symmetric flow. Without it (--decoder on a model trained on img2palette) it is the
     one-step conditional estimate, the control for the symmetric flow."""
     kwargs = dict(seed=seed, num_steps=args.symm_seg_steps, use_vit=not args.symm_no_vit,
-                  recompute_known=args.symm_recompute_known, cfg_scale=args.symm_cfg_scale)
+                  recompute_known=args.symm_recompute_known, cfg_scale=args.symm_cfg_scale,
+                  hold_known=args.symm_hold_known)
     if flow.decoder is None:
         raw = flow.segment(photo, ds.symm_prompt(), **kwargs).convert("RGB")
         label, off = palette_to_label(ds, raw, photo.size)
@@ -376,9 +382,10 @@ def symm_legend_text(flow, ds, photo, args, key=None, gt_label=None, conditional
             flow.generate_legend(photo, ds.symm_legend_prompt(), max_tokens))
     if path:
         os.makedirs(args.legend_cache, exist_ok=True)
-        with open(path + ".tmp", "w") as f:
+        tmp = f"{path}.{os.getpid()}.tmp"  # per process: jobs sharing a cache must not share a temporary file
+        with open(tmp, "w") as f:
             f.write(text)
-        os.replace(path + ".tmp", path)
+        os.replace(tmp, path)
     return text
 
 
@@ -391,7 +398,8 @@ def segment_symm_legend(flow, ds, photo, seed, args, key=None, gt_label=None):
         raise ValueError("--symm_no_vit with --format legend needs --oracle_legend: the legend is read from the ViT prefix")
     text = symm_legend_text(flow, ds, photo, args, key, gt_label)
     kwargs = dict(seed=seed, num_steps=args.symm_seg_steps, use_vit=not args.symm_no_vit,
-                  recompute_known=args.symm_recompute_known, legend=text, cfg_scale=args.symm_cfg_scale)
+                  recompute_known=args.symm_recompute_known, legend=text, cfg_scale=args.symm_cfg_scale,
+                  hold_known=args.symm_hold_known)
     if flow.decoder is None:
         raw = flow.segment(photo, ds.symm_legend_prompt(), **kwargs).convert("RGB")
         label, info = legend_to_label(ds, raw, text, photo.size)

@@ -290,6 +290,8 @@ class CocoStuffMultiTaskDataset(SegMultiTaskDataset):
         symm_vit_prob: 0.5              symm: share of samples with the photo's ViT prefix
         symm_endpoint_prob: 0.2         symm: share of samples at t = 0 or 1 instead of uniform t
         symm_text_dropout: 0.0          symm: share of samples without prompt and legend (for text guidance)
+        symm_cond_prob: 0.0             symm: share of samples with one stream clean, the other at its own level
+        symm_cond_photo_share: 0.5      symm: share of those slices in which the photo is the clean one
     """
 
     MODES = SegMultiTaskDataset.MODES + ("img2palette_legend",)
@@ -299,10 +301,10 @@ class CocoStuffMultiTaskDataset(SegMultiTaskDataset):
                  local_rank=0, world_size=1, num_workers=8, data_status=None, mode_weights=None,
                  partial_present_range=(1, 8), partial_absent_max=2, binary_present_prob=0.8, shuffle_lines=True,
                  shuffle_seed=0, task_prompt=None, symm_beta=0.0, symm_vit_prob=0.5, symm_endpoint_prob=0.2,
-                 symm_text_dropout=0.0):
+                 symm_text_dropout=0.0, symm_cond_prob=0.0, symm_cond_photo_share=0.5):
         super().__init__(dataset_name, transform, tokenizer, vit_transform, local_rank, world_size, num_workers,
                          data_status, mode_weights, shuffle_seed, symm_beta, symm_vit_prob, symm_endpoint_prob,
-                         symm_text_dropout)
+                         symm_text_dropout, symm_cond_prob, symm_cond_photo_share)
         self.partial_present_range = tuple(partial_present_range)
         self.partial_absent_max = partial_absent_max
         self.binary_present_prob = binary_present_prob

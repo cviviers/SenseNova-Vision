@@ -296,6 +296,10 @@ class TrainingArguments:
         default=0.5,
         metadata={"help": "Mode symm: weight of the photo stream's loss."}
     )
+    symm_clean_weight: float = field(
+        default=1.0,
+        metadata={"help": "Symm modes: weight of the loss of a stream at its clean endpoint (0 = none)."}
+    )
     ce_weight: float = field(
         default=1.0,
         metadata={"help": "Scaling factor for the language cross-entropy loss term."}
@@ -721,7 +725,8 @@ def main():
             groups = [d.get("mode", d.get("dataset_name", "all")) for d in data_indexes]
             accumulate_groups(group_window, per_group_losses(loss_dict, data, groups))
             accumulate_groups(group_window, per_stream_losses(loss_dict, data, groups))
-            mse_row_weights = symm_row_weights(data, groups, training_args.symm_image_weight)
+            mse_row_weights = symm_row_weights(data, groups, training_args.symm_image_weight,
+                                              training_args.symm_clean_weight)
         
         loss = 0
         ce = loss_dict["ce"]

@@ -88,7 +88,7 @@ class SymmetricFlow:
             return self.inferencer.gen_text(context, max_length=max_tokens, do_sample=False)
 
     def _run(self, known, direction, prompt, shape, seed, num_steps, vit_image, recompute_known, legend=None,
-             cfg_scale=1.0):
+             cfg_scale=1.0, hold_known=False):
         context = self._context(prompt, vit_image, legend)
         query = self._query(context, shape, [SYMM_ROPE_IMAGE, context["ropes"][0]])
         uncond = None
@@ -107,6 +107,7 @@ class SymmetricFlow:
             known_noise=known_noise,
             cfg_scale=cfg_scale,
             uncond=uncond,
+            hold_known=hold_known,
             past_key_values=context["past_key_values"],
             **query,
         )
@@ -157,32 +158,33 @@ class SymmetricFlow:
 
     @torch.no_grad()
     def segment_latent(self, photo, prompt, seed=0, num_steps=1, use_vit=True, recompute_known=False, legend=None,
-                       cfg_scale=1.0):
+                       cfg_scale=1.0, hold_known=False):
         """Predicted map latent tokens for a photo, and the (H, W) they decode to. legend: symm_legend models;
-        cfg_scale: text guidance (models trained with symm_text_dropout)."""
+        cfg_scale: text guidance (models trained with symm_text_dropout); hold_known: keep the photo clean at every
+        step (models trained with symm_cond_prob)."""
         with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             known, shape = self.encode(photo)
             latent = self._run(known, "segment", prompt, shape, seed, num_steps, photo if use_vit else None,
-                               recompute_known, legend, cfg_scale)
+                               recompute_known, legend, cfg_scale, hold_known)
         return latent, shape
 
     @torch.no_grad()
     def segment(self, photo, prompt, seed=0, num_steps=1, use_vit=True, recompute_known=False, legend=None,
-                cfg_scale=1.0):
+                cfg_scale=1.0, hold_known=False):
         """Colour-coded map as a PIL image, decoded by the VAE."""
         latent, shape = self.segment_latent(photo, prompt, seed, num_steps, use_vit, recompute_known, legend,
-                                            cfg_scale)
+                                            cfg_scale, hold_known)
         with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             return self.inferencer.decode_image(latent, shape)
 
     @torch.no_grad()
     def synthesize(self, mask, prompt, seed=0, num_steps=25, beta=0.0, recompute_known=False, legend=None,
-                   cfg_scale=1.0):
+                   cfg_scale=1.0, hold_known=False):
         """Photo for a colour-coded map, as a PIL image. beta dequantizes the map as in training. legend: the map's
         colour legend (symm_legend models; the map must then be drawn in the legend's colours)."""
         mask = dequantize(mask, random.Random(seed), beta)
         with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             known, shape = self.encode(mask)
             latent = self._run(known, "synthesize", prompt, shape, seed, num_steps, None, recompute_known, legend,
-                               cfg_scale)
+                               cfg_scale, hold_known)
             return self.inferencer.decode_image(latent, shape)
