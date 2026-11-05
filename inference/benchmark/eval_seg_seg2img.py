@@ -42,12 +42,14 @@ Outputs (resumable per image/seed; shards share the directory):
 """
 
 import argparse
+import gc
 import glob
 import json
 import os
 import time
 
 import numpy as np
+import torch
 from PIL import Image
 
 from inference.benchmark.seg_eval_common import (
@@ -122,11 +124,19 @@ def main():
     parser.add_argument("--format", default="palette", choices=("palette", "legend"),
                         help="--symm: palette (mode symm) or legend (mode symm_legend).")
     parser.add_argument("--max_text_tokens", type=int, default=1024, help="--format legend: legend length limit.")
+    parser.add_argument("--judge", choices=("model", "base"), default="model",
+                        help="Photo check by the model under test (model), or by the base model without adapter "
+                             "(base), in a pass after generation, so that models compare under one judge.")
+    parser.add_argument("--reuse_gen", default=None,
+                        help="Score the photos of an earlier run (<dir>/gen/<key>_s<seed>.png) instead of generating, "
+                             "e.g. a subset of a FID-50k run. Use with --no_roundtrip or a model that can segment.")
     args = parser.parse_args()
     if args.format == "legend" and not args.symm:
         parser.error("--format legend applies to --symm (symm_legend models)")
     if args.oracle_legend:
         parser.error("--oracle_legend is a segmentation diagnostic; the round trip has no ground-truth legend")
+    if args.reuse_gen and args.judge == "model" and not args.no_photo_check:
+        parser.error("--reuse_gen scores another model's photos: use --judge base (or --no_photo_check)")
 
     ds = get_dataset(args)
     prompt_fn = ds.seg2img_prompt if args.prompt == "training" else ds.seg2img_region_prompt
@@ -150,8 +160,8 @@ def main():
           f"shard={args.shard_id}/{args.num_shards} remaining={len(jobs)} ceiling_remaining={len(ceiling_todo)} "
           f"adapter={args.adapter}", flush=True)
 
-    model = None
-    if jobs or ceiling_todo:
+    model = flow = None
+    if (jobs and not args.reuse_gen) or ceiling_todo or (jobs and not args.no_roundtrip):
         model, info = load_model(args)
         params, transforms = generation_params(args, ds)
         flow = symm_flow(model, ds, args) if args.symm else None
@@ -195,9 +205,14 @@ def main():
         if s == 0 and not os.path.exists(f"{out}/ref/{k}.png"):
             save_png(photo, f"{out}/ref/{k}.png")
         t0 = time.time()
-        gen = generate(label, 1000 * s + int(k) % 1_000_000).convert("RGB").resize(photo.size, Image.BICUBIC)
+        if args.reuse_gen:
+            gen = Image.open(f"{args.reuse_gen}/gen/{k}_s{s}.png").convert("RGB")
+        else:
+            gen = generate(label, 1000 * s + int(k) % 1_000_000).convert("RGB").resize(photo.size, Image.BICUBIC)
         rec = {"key": k, "seed": s, "seconds": round(time.time() - t0, 2)}
-        if checked(s) and not args.no_photo_check:
+        if args.reuse_gen:
+            rec["reused"] = args.reuse_gen
+        if checked(s) and not args.no_photo_check and args.judge == "model":
             rec["is_photo"] = is_photo(model, ds, gen)
         if checked(s) and not args.no_roundtrip:
             _, pred, off = segment(gen, args.seed + int(k) % 1_000_000)
@@ -218,6 +233,26 @@ def main():
         print(f"[seg2img] shard {args.shard_id}/{args.num_shards} done; metrics come from a final unsharded run")
         return
 
+    judged = {}  # (key, seed) -> is_photo by the base model
+    if args.judge == "base" and not args.no_photo_check:
+        for path in sorted(glob.glob(f"{out}/judge*.jsonl")):
+            for line in open(path):
+                rec = json.loads(line)
+                judged[(rec["key"], rec["seed"])] = rec["is_photo"]
+        todo = [(k, s) for k, s in samples if checked(s) and (k, s) not in judged
+                and os.path.exists(f"{out}/gen/{k}_s{s}.png")]
+        if todo:
+            del model, flow
+            gc.collect()
+            torch.cuda.empty_cache()
+            judge, _ = load_model(argparse.Namespace(**{**vars(args), "adapter": None}))
+            with open(f"{out}/judge.jsonl", "a") as f:
+                for n, (k, s) in enumerate(todo, 1):
+                    judged[(k, s)] = is_photo(judge, ds, Image.open(f"{out}/gen/{k}_s{s}.png").convert("RGB"))
+                    f.write(json.dumps({"key": k, "seed": s, "is_photo": judged[(k, s)], "judge": "base"}) + "\n")
+                    if n % 100 == 0:
+                        print(f"[seg2img] base judge {n}/{len(todo)}", flush=True)
+
     labels = {k: ds.load(k)[1] for k in keys}
     if not args.no_roundtrip and not os.path.exists(f"{out}/ceiling.json"):
         conf = np.zeros((ds.num_ids, ds.num_ids), np.int64)
@@ -232,13 +267,17 @@ def main():
             rec = json.loads(line)
             records[(rec["key"], rec["seed"])] = rec
     logs = [records[ks] for ks in samples if ks in records]
+    for l in logs:  # the base judge replaces the model's own check
+        if (l["key"], l["seed"]) in judged:
+            l["is_photo"] = judged[(l["key"], l["seed"])]
     if len(logs) < len(samples):
         print(f"[seg2img] WARNING {len(samples) - len(logs)} samples have no log record", flush=True)
     metrics = {"dataset": ds.name, "num_maps": len(keys), "num_generated": len(logs),
                "seconds_per_image": float(np.mean([l["seconds"] for l in logs]))}
     if not args.no_photo_check:
         photo_logs = [l for l in logs if "is_photo" in l]
-        metrics.update(photo_rate=float(np.mean([l["is_photo"] for l in photo_logs])), photo_checked=len(photo_logs))
+        metrics.update(photo_rate=float(np.mean([l["is_photo"] for l in photo_logs])), photo_checked=len(photo_logs),
+                       photo_judge=args.judge)
     if not args.no_roundtrip:
         conf = np.zeros((ds.num_ids, ds.num_ids), np.int64)
         conf_ungated = np.zeros_like(conf)

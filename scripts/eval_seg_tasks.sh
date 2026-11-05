@@ -12,6 +12,7 @@
 #   img2binseg   photo -> one binary mask per class (celebamask only;
 #                inference/benchmark/batch_celebamask_segment.py), mIoU -> <output_dir>/img2binseg/metrics.json
 #   seg2img      palette map -> photo, photo rate / layout / FID / KID  -> <output_dir>/seg2img/metrics.json
+#   legend_rescore  legend names chosen by analysis by synthesis (cocostuff) -> <output_dir>/legend_rescore/metrics.json
 #
 # Extra arguments go to every task (--adapter --model_path --split --limit --num_timesteps --cfg_text_scale
 # --seed); seg2img-only flags (--prompt training|regions, --seeds N, --num_samples N, --check_seeds K, --no_fid,
@@ -98,6 +99,11 @@ for task in ${tasks//,/ }; do
       else
         "${seg2img_cmd[@]}"
       fi ;;
+    legend_rescore)
+      # Rename legend entries within groups of related classes by analysis by synthesis (cocostuff, symm_legend
+      # models); pass --legend_dir and --raw_dir (or segmentation flags) with the other arguments.
+      python -m inference.benchmark.legend_rescore --dataset "${dataset}" --dataset_root "${root}" \
+        --max_mem_per_gpu "${max_mem}" --output_dir "${out}/legend_rescore" "$@" ;;
     *)
       >&2 echo "Error: unknown task ${task}"; exit 1 ;;
   esac
