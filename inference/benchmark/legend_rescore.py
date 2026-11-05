@@ -144,7 +144,8 @@ def main():
         if entries and len(re.findall(r"<p>(.*?)<color>", text)) == len(entries):
             parsed = class_mask_from_raw_output(raw, text)
             index = parsed["class_mask"]
-            palette = np.asarray(parsed["class_define"], dtype=np.uint8)  # entry colours, then black
+            # entry colours, then black; exactly black pixels get the index after the last colour (to_multi_mask)
+            palette = np.vstack([np.asarray(parsed["class_define"], dtype=np.uint8), np.zeros((1, 3), np.uint8)])
             flat = Image.fromarray(palette[index])
             flat = dequantize(flat, random.Random(seed), ds.symm_beta)
             todo_entries = []
