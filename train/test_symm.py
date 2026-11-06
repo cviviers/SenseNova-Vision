@@ -27,10 +27,11 @@ from data.seg_multitask import (
 from data.transforms import ImageTransform
 from inference.inferencer import InterleaveInferencer
 from inference.symmetric import SymmetricFlow
-from modeling.seg_decoder import SegDecoder, load_seg_decoder, unpack_latent
+from modeling.autoencoder import load_ae
+from modeling.seg_decoder import SegDecoder, init_from_vae, load_seg_decoder, unpack_latent
 from train.finetune_lora import build_model
 from train.irepa import IREPA, spatial_zscore
-from train.train_seg_decoder import segmentation_loss
+from train.train_seg_decoder import segmentation_loss, slot_target
 from train.train_utils import per_group_losses, per_stream_losses, summarize_groups, accumulate_groups, symm_row_weights
 
 SIZE = 128
@@ -269,6 +270,51 @@ def check_decoder(model, flow, tmp_path="/tmp/test_symm_decoder.pt"):
     reloaded = load_seg_decoder(tmp_path, DEVICE)
     with torch.no_grad():
         assert torch.equal(reloaded(latent), decoder.eval()(latent))
+
+
+def check_vae_decoder(model, flow, model_path, tmp_path="/tmp/test_symm_vae_decoder.pt"):
+    """Size "vae": with the VAE's own RGB output layer it reproduces AutoEncoder.decode (weights copied, latent scale
+    undone); with a class head it trains and round-trips. Slot targets follow the legend order. Saved latents load
+    back unchanged."""
+    import os
+    from inference.benchmark.seg_eval_common import save_latent
+
+    photo, _ = make_images()
+    tokens, shape = flow.encode(photo)
+    latent = unpack_latent(model, tokens, shape).float()
+    ae_path = os.path.join(model_path, "ae.safetensors")
+    ae, _ = load_ae(ae_path)
+    ae = ae.to(DEVICE).float().eval()
+    rgb = SegDecoder(model.latent_channel, 3, "vae").to(DEVICE).eval()
+    assert init_from_vae(rgb, ae_path) > 100
+    rgb.net.conv_out.load_state_dict(ae.decoder.conv_out.state_dict())
+    with torch.no_grad():
+        want, got = ae.decode(latent), rgb(latent)
+    assert torch.allclose(got, want, atol=1e-4), f"VAE-initialised decoder differs: {(got - want).abs().max()}"
+
+    decoder = SegDecoder(model.latent_channel, 5, "vae").to(DEVICE)
+    init_from_vae(decoder, ae_path)
+    assert torch.equal(decoder.net.conv_in.weight, ae.decoder.conv_in.weight)
+    logits = decoder(latent)
+    assert logits.shape == (1, 5, SIZE, SIZE)
+    label = torch.zeros(1, SIZE, SIZE, dtype=torch.long, device=DEVICE)
+    label[:, SIZE // 2 :] = 2
+    ce, dice = segmentation_loss(logits, label, ignore_unlabeled=False)
+    (ce + dice).backward()
+    assert decoder.net.conv_out.weight.grad.abs().sum() > 0 and decoder.net.conv_in.weight.grad.abs().sum() > 0
+    torch.save({"decoder": decoder.state_dict(), "config": decoder.config}, tmp_path)
+    reloaded = load_seg_decoder(tmp_path, DEVICE)
+    with torch.no_grad():
+        assert torch.equal(reloaded(latent), decoder.eval()(latent))
+
+    ids = np.array([[0, 2, 5, 7]], dtype=np.uint8)
+    assert slot_target(ids, [5, 2, 7], 3).tolist() == [[0, 2, 1, 3]], "slot k is the k-th legend class"
+    assert slot_target(ids, [5, 2, 7], 2).tolist() == [[0, 2, 1, 0]], "classes past max_slots get slot 0"
+
+    save_latent("/tmp/test_symm_latents", "k1", tokens, shape, LEGEND)
+    entry = torch.load("/tmp/test_symm_latents/k1.pt", weights_only=False)
+    assert entry["shape"] == tuple(shape) and entry["legend"] == LEGEND
+    assert torch.equal(entry["latent"], tokens.to("cpu", torch.bfloat16))
 
 
 def check_stream_embedding(model, packer, tokenizer):
@@ -628,6 +674,8 @@ def main():
     print("hold-known sampler ok: one step unchanged, known stream held, exclusive with recompute")
     check_decoder(model, flow)
     print("decoder ok: unpacking, resolution, loss, empty labels, checkpoint")
+    check_vae_decoder(model, flow, args.model_path)
+    print("VAE-initialised decoder ok: reproduces the VAE decode, class head trains, checkpoint, slot targets, latents")
     print("ALL PASSED")
 
 

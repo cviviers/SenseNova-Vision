@@ -23,6 +23,19 @@ ground-truth legend.
 --cache_dir: predicting a latent costs a forward pass of the whole model, which dominates training. The cache pass
 stores, per image, the ground-truth latent and --cache_predicted latents predicted at uniform t, once; training then
 reads latents from memory. Fewer distinct predictions per image, much faster updates.
+
+--cache_steps N (--flow symm --legend): the predicted latents are the sampler's output after N steps, with the eval's
+settings (--cache_cfg, --cache_hold_known, ViT prefix, ground-truth legend), instead of one-step estimates: a decoder
+for multi-step segmentation must read the sampler's sharp output, not the blurry average of a single step. That
+costs N (or 2N with guidance) forward passes per image, so the cache can be built by several jobs at once
+(--cache_shard i --cache_shards n --cache_only, each writing its own parts), and training starts once every part
+exists.
+
+--size vae starts from the VAE's own decoder (modeling/seg_decoder.py), its RGB output layer replaced.
+
+--val_latents DIR scores the decoder after training on latents stored by eval_seg_img2palette --save_latents (each with
+its generated legend), so the decoder and the VAE readout are compared on the very same latents: <output_dir>/val/
+pred/<key>.png and metrics.json. --eval_only scores the saved decoder.pt without training.
 """
 
 import argparse
@@ -37,8 +50,11 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from inference.benchmark.seg_eval_common import add_model_args, get_dataset, load_model, symm_flow
-from modeling.seg_decoder import SIZES, SegDecoder, unpack_latent
+from PIL import Image
+
+from inference.benchmark.seg_eval_common import (add_model_args, confusion, decode_legend_slots, get_dataset,
+                                                  load_model, summarize, symm_flow)
+from modeling.seg_decoder import SIZES, SegDecoder, init_from_vae, unpack_latent
 
 
 class Pairs(Dataset):
@@ -80,15 +96,17 @@ def slot_target(label, order, max_slots):
     return lut[np.asarray(label)]
 
 
-class Labels(Dataset):
-    def __init__(self, ds, keys):
-        self.ds, self.keys = ds, keys
+class Targets(Dataset):
+    """(index, per-pixel target) per key; the target is computed in the data-loader workers."""
+
+    def __init__(self, ds, keys, target_fn):
+        self.ds, self.keys, self.target_fn = ds, keys, target_fn
 
     def __len__(self):
         return len(self.keys)
 
     def __getitem__(self, index):
-        return index, self.ds.load(self.keys[index])[1]
+        return index, self.target_fn(self.ds.load(self.keys[index])[1])
 
 
 def main():
@@ -113,10 +131,30 @@ def main():
                              "pixels of later entries are background (CelebAMask-HQ) or ignored (COCO-Stuff).")
     parser.add_argument("--cache_dir", default=None, help="Predict latents once into this directory, then train from it.")
     parser.add_argument("--cache_predicted", type=int, default=1, help="--cache_dir: predicted latents per image.")
+    parser.add_argument("--cache_steps", type=int, default=0,
+                        help="--cache_dir with --flow symm --legend: predicted latents from the sampler after this many "
+                             "steps (as the eval runs it) instead of one step at uniform t (0).")
+    parser.add_argument("--cache_cfg", type=float, default=1.0, help="--cache_steps: text guidance scale.")
+    parser.add_argument("--cache_hold_known", action="store_true", help="--cache_steps: keep the photo clean.")
+    parser.add_argument("--cache_shard", type=int, default=0, help="Build only the cache parts p with p %% n == i.")
+    parser.add_argument("--cache_shards", type=int, default=1)
+    parser.add_argument("--cache_only", action="store_true", help="Build this shard's cache parts, then exit.")
+    parser.add_argument("--val_latents", default=None,
+                        help="Directory of latents saved by eval_seg_img2palette --save_latents: score the decoder on "
+                             "them after training (--legend only).")
+    parser.add_argument("--eval_only", action="store_true", help="Score the saved decoder.pt on --val_latents.")
     args = parser.parse_args()
     args.symm = args.flow == "symm"
     if args.max_slots is None:
         args.max_slots = DEFAULT_MAX_SLOTS[args.dataset]
+    if args.cache_steps and not (args.cache_dir and args.symm and args.legend):
+        parser.error("--cache_steps needs --cache_dir, --flow symm and --legend")
+    if (args.cache_only or args.cache_shards > 1) and not args.cache_dir:
+        parser.error("--cache_only and --cache_shards need --cache_dir")
+    if (args.val_latents or args.eval_only) and not args.legend:
+        parser.error("--val_latents scores slot decoders (--legend)")
+    if args.eval_only and not args.val_latents:
+        parser.error("--eval_only needs --val_latents")
 
     torch.manual_seed(args.seed)
     rng = random.Random(args.seed)
@@ -140,12 +178,21 @@ def main():
         return slot_target(label, order, args.max_slots), legend_map, legend
 
     def predict(photo, mask_latent, legend, t, seed, use_vit):
+        if args.cache_steps:  # the eval's sampler: ViT prefix, ground-truth legend, guidance, photo optionally held
+            latent, _ = flow.segment_latent(photo, prompt, seed, num_steps=args.cache_steps, use_vit=True,
+                                            legend=legend, cfg_scale=args.cache_cfg, hold_known=args.cache_hold_known)
+            return latent
         if args.symm:
             return flow.one_step_from_pair(photo, mask_latent, t, prompt, seed, photo if use_vit else None, legend)
         latent, _ = flow.conditional_latent(photo, prompt, seed, noise_level=t, mask_latent=mask_latent, legend=legend)
         return latent
 
-    cache = build_cache(args, ds, keys, flow, target_and_map, predict) if args.cache_dir else None
+    cache = None
+    if args.cache_dir and not args.eval_only:
+        cache = build_cache(args, ds, keys, flow, target_and_map, predict)
+        if args.cache_only:
+            print(f"[decoder] cache shard {args.cache_shard}/{args.cache_shards} done", flush=True)
+            os._exit(0)
 
     decoder = SegDecoder(model.model.latent_channel, num_classes, args.size).to(device)
     optimizer = torch.optim.AdamW(decoder.parameters(), lr=args.lr, weight_decay=0.0)
@@ -157,6 +204,14 @@ def main():
         optimizer.load_state_dict(checkpoint["optimizer"])
         step = checkpoint["step"]
         print(f"[decoder] resuming at step {step}", flush=True)
+    elif args.eval_only:
+        raise SystemExit(f"--eval_only: no {ckpt_path}")
+    elif args.size == "vae":
+        copied = init_from_vae(decoder, os.path.join(args.model_path, "ae.safetensors"))
+        print(f"[decoder] initialised from the VAE decoder ({copied} tensors)", flush=True)
+    if args.eval_only:
+        score_val(args, flow, decoder)
+        os._exit(0)
     total_steps = math.ceil(args.epochs * len(keys) / args.batch_size)
     if args.max_steps:
         total_steps = min(total_steps, args.max_steps)
@@ -177,7 +232,7 @@ def main():
         while True:
             generator = torch.Generator().manual_seed(args.seed + epoch)
             order = torch.randperm(len(keys), generator=generator).tolist()
-            source = Labels(ds, keys) if cache else Pairs(ds, keys)
+            source = Targets(ds, keys, lambda label: target_and_map(label)[0]) if cache else Pairs(ds, keys)
             loader = DataLoader(torch.utils.data.Subset(source, order), batch_size=None, num_workers=args.num_workers,
                                 prefetch_factor=4 if args.num_workers else None)
             yield from loader
@@ -191,11 +246,10 @@ def main():
         for _ in range(args.batch_size):
             predicted = rng.random() < args.predicted_ratio
             if cache:
-                index, label = next(stream)
+                index, target = next(stream)
                 entry = cache[index]
                 latent = rng.choice(entry["pred"]) if predicted else entry["gt"]
                 latent, shape = latent.to(device).float(), entry["shape"]
-                target = target_and_map(label)[0]
             else:
                 photo, label = next(stream)
                 target, mask_image, legend = target_and_map(label)
@@ -230,7 +284,39 @@ def main():
             save()
     save()
     print(f"[decoder] saved {ckpt_path}", flush=True)
+    if args.val_latents:
+        score_val(args, flow, decoder)
     os._exit(0)  # data-loader workers iterate a generator that never ends
+
+
+@torch.no_grad()
+def score_val(args, flow, decoder):
+    """mIoU of the slot decoder on latents stored by eval_seg_img2palette --save_latents, read through the legend each
+    was drawn with; writes <output_dir>/val/pred/<key>.png and metrics.json. Its own dataset instance: the COCO-Stuff
+    loader follows the split of its last keys() call, and training uses the train split."""
+    ds = get_dataset(args)
+    split_keys = ds.keys("val", None)
+    present = {f[:-3] for f in os.listdir(args.val_latents) if f.endswith(".pt")}
+    keys = [k for k in split_keys if k in present]
+    out = os.path.join(args.output_dir, "val")
+    os.makedirs(os.path.join(out, "pred"), exist_ok=True)
+    flow.decoder = decoder.eval()
+    conf = np.zeros((ds.num_ids, ds.num_ids), np.int64)
+    start = time.time()
+    for n, key in enumerate(keys, 1):
+        entry = torch.load(os.path.join(args.val_latents, f"{key}.pt"), map_location="cpu", weights_only=False)
+        photo, gt = ds.load(key)
+        label, _ = decode_legend_slots(flow, ds, entry["latent"].to(flow.device).float(), entry["shape"], photo.size,
+                                       entry["legend"])
+        Image.fromarray(label).save(os.path.join(out, "pred", f"{key}.png"))
+        conf += confusion(ds, gt, label)
+        if n % 200 == 0:
+            print(f"[decoder] scored {n}/{len(keys)} mIoU so far {summarize(ds, conf)['mIoU']:.4f} "
+                  f"({time.time() - start:.0f}s)", flush=True)
+    metrics = {"num_images": len(keys), "val_latents": args.val_latents, **summarize(ds, conf)}
+    json.dump(metrics, open(os.path.join(out, "metrics.json"), "w"), indent=2)
+    print(f"[decoder] val: mIoU {metrics['mIoU']:.4f} pixel acc {metrics['pixel_accuracy']:.4f} on {len(keys)} "
+          f"images -> {out}/metrics.json", flush=True)
 
 
 def build_cache(args, ds, keys, flow, target_and_map, predict, part_size=256):
@@ -239,7 +325,8 @@ def build_cache(args, ds, keys, flow, target_and_map, predict, part_size=256):
     os.makedirs(args.cache_dir, exist_ok=True)
     parts = math.ceil(len(keys) / part_size)
     start = time.time()
-    for part in range(parts):
+    mine = [part for part in range(parts) if part % args.cache_shards == args.cache_shard]
+    for done, part in enumerate(mine, 1):
         path = os.path.join(args.cache_dir, f"part_{part:05d}.pt")
         if os.path.exists(path):
             continue
@@ -254,11 +341,14 @@ def build_cache(args, ds, keys, flow, target_and_map, predict, part_size=256):
                                 part_rng.random() < args.symm_vit_prob).to("cpu", torch.bfloat16)
                         for _ in range(args.cache_predicted)]
             entries.append({"key": key, "gt": mask_latent.to("cpu", torch.bfloat16), "pred": pred, "shape": shape})
-        torch.save(entries, path + ".tmp")
-        os.replace(path + ".tmp", path)
-        done = part + 1
-        eta = (time.time() - start) / done * (parts - done) / 60
-        print(f"[decoder] cache part {done}/{parts} eta={eta:.0f}min", flush=True)
+        tmp = f"{path}.{os.getpid()}.tmp"  # per process: shards share the directory
+        torch.save(entries, tmp)
+        os.replace(tmp, path)
+        eta = (time.time() - start) / done * (len(mine) - done) / 60
+        print(f"[decoder] cache part {part} ({done}/{len(mine)} of shard {args.cache_shard}) eta={eta:.0f}min",
+              flush=True)
+    if args.cache_only:
+        return None
     cache = []
     for part in range(parts):
         entries = torch.load(os.path.join(args.cache_dir, f"part_{part:05d}.pt"), weights_only=False)

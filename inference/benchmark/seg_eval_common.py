@@ -400,7 +400,13 @@ def segment_symm_legend(flow, ds, photo, seed, args, key=None, gt_label=None):
     kwargs = dict(seed=seed, num_steps=args.symm_seg_steps, use_vit=not args.symm_no_vit,
                   recompute_known=args.symm_recompute_known, legend=text, cfg_scale=args.symm_cfg_scale,
                   hold_known=args.symm_hold_known)
-    if flow.decoder is None:
+    latent_dir = getattr(args, "latent_dir", None)
+    if flow.decoder is None and latent_dir and key is not None:
+        latent, shape = flow.segment_latent(photo, ds.symm_legend_prompt(), **kwargs)
+        save_latent(latent_dir, key, latent, shape, text)
+        raw = flow.decode(latent, shape).convert("RGB")
+        label, info = legend_to_label(ds, raw, text, photo.size)
+    elif flow.decoder is None:
         raw = flow.segment(photo, ds.symm_legend_prompt(), **kwargs).convert("RGB")
         label, info = legend_to_label(ds, raw, text, photo.size)
     else:
@@ -411,6 +417,18 @@ def segment_symm_legend(flow, ds, photo, seed, args, key=None, gt_label=None):
         info.update(zip(("legend_tp", "legend_fp", "legend_fn"), legend_presence(ds, info["legend_ids"], gt_label)))
     del info["legend_ids"]
     return raw, label, {"text": text, **info}
+
+
+def save_latent(latent_dir, key, latent, shape, legend):
+    """Store a predicted map latent (BF16 tokens), its (H, W) and the legend it was drawn with as <key>.pt, so that
+    segmentation decoders can later read the same latent the VAE readout was scored on (train_seg_decoder.py
+    --val_latents)."""
+    os.makedirs(latent_dir, exist_ok=True)
+    path = os.path.join(latent_dir, f"{key}.pt")
+    tmp = f"{path}.{os.getpid()}.tmp"
+    torch.save({"latent": latent.to("cpu", torch.bfloat16), "shape": tuple(int(s) for s in shape), "legend": legend},
+               tmp)
+    os.replace(tmp, path)
 
 
 def segment_legend_conditional(flow, ds, photo, seed, args, key=None, gt_label=None):

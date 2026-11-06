@@ -174,6 +174,11 @@ class SymmetricFlow:
         """Colour-coded map as a PIL image, decoded by the VAE."""
         latent, shape = self.segment_latent(photo, prompt, seed, num_steps, use_vit, recompute_known, legend,
                                             cfg_scale, hold_known)
+        return self.decode(latent, shape)
+
+    @torch.no_grad()
+    def decode(self, latent, shape):
+        """PIL image of latent tokens, decoded by the VAE."""
         with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             return self.inferencer.decode_image(latent, shape)
 

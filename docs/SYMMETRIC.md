@@ -157,6 +157,36 @@ bash scripts/spike_submit.sh <run> decoder celebamask --flow symm --legend --ada
   --cache_dir /data/runs/<run>/cache --size S
 ```
 
+### Decoders for multi-step segmentation
+
+A decoder for 50-step segmentation must read what the sampler produces after 50 steps: a sharp sample, not the blurry
+average that a single step gives. `--cache_steps N` fills the cache with the sampler's output after `N` steps. It uses
+the eval's settings (`--cache_cfg`, `--cache_hold_known`, ViT prefix) with the ground-truth legend. At 50 guided steps
+that costs about 100 forward passes per image, so several jobs build the cache at once: each takes
+`--cache_shard i --cache_shards n --cache_only` and writes its own parts. Training starts once every part exists.
+
+`--size vae` starts from the VAE's own decoder. Its RGB output layer is replaced by one for the slots, and every other
+weight is copied from `ae.safetensors`. The other sizes train from scratch.
+
+The decoder and the VAE readout are scored on the same latents:
+
+1. `eval_seg_img2palette --save_latents` stores each predicted latent with its generated legend as `latent/<key>.pt`,
+   next to the VAE readout's predictions.
+2. `train_seg_decoder --val_latents <dir>` scores the trained decoder on those latents, in `<output_dir>/val/`.
+   `--eval_only` re-scores a saved decoder.
+
+Comparing the two prediction sets, image by image, isolates the readout from sampling noise.
+
+Even a perfect map latent loses some mIoU through the VAE readout. This was measured by encoding the ground-truth
+legend map, decoding it and reading it through the legend, on the first 200 val images:
+
+| Dataset | mIoU | Worst classes |
+|---|---|---|
+| COCO-Stuff | 0.963 | Thin and small objects: baseball bat 0.50, remote 0.52, skis 0.71 |
+| CelebAMask-HQ | 0.949 | Necklace 0.70; eyes, lips and mouth about 0.93 |
+
+That loss is what a decoder can recover from the readout alone. Wrong legend entries are out of its reach.
+
 ## Architecture animation
 
 [Watch the animation](architecture_animation/exports/sensenova-to-symmetric-flow.mp4) or open the

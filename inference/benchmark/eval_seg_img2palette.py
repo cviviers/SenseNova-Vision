@@ -20,6 +20,7 @@ Outputs (resumable; existing pred/<key>.png are skipped):
     raw/<key>.png     generated map as produced
     pred/<key>.png    label map (class ids) after snapping to the palette
     log.jsonl         per image: seconds, off-palette pixel share (log.shard<i>.jsonl when sharded)
+    latent/<key>.pt   with --save_latents (--symm --format legend): predicted map latent, its size and legend
     metrics.json      mIoU, pixel accuracy, per-class IoU, confusion matrix, off-palette share, seconds/image
 
     python -m inference.benchmark.eval_seg_img2palette --dataset cocostuff \\
@@ -75,6 +76,10 @@ def main():
     parser.add_argument("--shard_id", type=int, default=0)
     parser.add_argument("--generate_only", action="store_true",
                         help="Write this shard's files and skip the metrics; a final run without sharding computes them.")
+    parser.add_argument("--save_latents", action="store_true",
+                        help="--symm --format legend: also store each predicted map latent and its legend as "
+                             "latent/<key>.pt, for scoring segmentation decoders on the same latents "
+                             "(train_seg_decoder.py --val_latents).")
     args = parser.parse_args()
 
     ds = get_dataset(args)
@@ -82,11 +87,18 @@ def main():
         parser.error(f"--format legend is not implemented for {ds.name}")
     if (args.oracle_legend or args.legend_cache) and not (args.format == "legend" and (args.symm or args.decoder)):
         parser.error("--oracle_legend and --legend_cache apply to --format legend with --symm or --decoder")
+    if args.save_latents and not (args.symm and args.format == "legend" and not args.decoder):
+        parser.error("--save_latents applies to --symm --format legend without --decoder")
     out = args.output_dir
+    args.latent_dir = os.path.join(out, "latent") if args.save_latents else None
     for sub in ("raw", "pred"):
         os.makedirs(os.path.join(out, sub), exist_ok=True)
     keys = ds.keys(args.split, args.limit)
-    todo = [k for k in keys[args.shard_id::args.num_shards] if not os.path.exists(os.path.join(out, "pred", f"{k}.png"))]
+    def done(k):  # with --save_latents an image also needs its latent
+        return os.path.exists(os.path.join(out, "pred", f"{k}.png")) and (
+            not args.latent_dir or os.path.exists(os.path.join(args.latent_dir, f"{k}.pt")))
+
+    todo = [k for k in keys[args.shard_id::args.num_shards] if not done(k)]
     print(f"[img2palette] dataset={ds.name} format={args.format} split={args.split} images={len(keys)} "
           f"shard={args.shard_id}/{args.num_shards} remaining={len(todo)} adapter={args.adapter}", flush=True)
     log_path = os.path.join(out, "log.jsonl" if args.num_shards == 1 else f"log.shard{args.shard_id}.jsonl")
