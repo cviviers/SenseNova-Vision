@@ -45,7 +45,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 )
 from torch.utils.data import DataLoader
 from transformers import HfArgumentParser, set_seed
-from transformers.optimization import get_cosine_schedule_with_warmup
+from transformers.optimization import get_cosine_schedule_with_warmup, get_cosine_with_min_lr_schedule_with_warmup
 
 from data.data_utils import add_special_tokens
 from data.dataset_base import DataConfig, PackedDataset, collate_wrapper
@@ -105,6 +105,8 @@ class FinetuneArguments:
     weight_decay: float = field(default=0.0)
     warmup_steps: int = field(default=20)
     total_steps: int = field(default=300, metadata={"help": "Optimizer steps."})
+    min_lr_ratio: float = field(default=0.0, metadata={
+        "help": "Floor of the cosine decay as a share of --lr (0.01: decays to lr / 100); 0 decays to zero."})
     gradient_accumulation_steps: int = field(default=1)
     max_grad_norm: float = field(default=1.0)
     ce_weight: float = field(default=0.25)
@@ -329,6 +331,14 @@ def build_dataloader(args: FinetuneArguments, tokenizer, new_token_ids, vae_conf
     )
 
 
+def make_scheduler(optimizer, args: FinetuneArguments, last_epoch: int = -1):
+    """Linear warmup, then cosine decay to args.min_lr_ratio * lr (to zero by default)."""
+    if args.min_lr_ratio > 0:
+        return get_cosine_with_min_lr_schedule_with_warmup(optimizer, args.warmup_steps, args.total_steps,
+                                                           last_epoch=last_epoch, min_lr_rate=args.min_lr_ratio)
+    return get_cosine_schedule_with_warmup(optimizer, args.warmup_steps, args.total_steps, last_epoch=last_epoch)
+
+
 def use_symm_embedding(args: FinetuneArguments) -> bool:
     with open(args.dataset_config_file) as f:
         return args.symm_embedding and uses_symm(yaml.safe_load(f))
@@ -423,7 +433,7 @@ def main():
     )
 
     optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = get_cosine_schedule_with_warmup(optimizer, args.warmup_steps, args.total_steps)
+    scheduler = make_scheduler(optimizer, args)
     state_path = os.path.join(resume_dir, "training_state.pt") if resume_dir else None
     if state_path and os.path.exists(state_path):
         state = torch.load(state_path, map_location=device, weights_only=True)
@@ -438,8 +448,7 @@ def main():
         for group in optimizer.param_groups:
             group["initial_lr"] = args.lr
         # The constructor steps once: last_epoch becomes start_step, as after start_step optimizer steps.
-        scheduler = get_cosine_schedule_with_warmup(optimizer, args.warmup_steps, args.total_steps,
-                                                    last_epoch=start_step - 1)
+        scheduler = make_scheduler(optimizer, args, last_epoch=start_step - 1)
         print(f"[finetune] no training_state.pt: fresh AdamW, lr={scheduler.get_last_lr()[0]:.2e}")
     if start_step >= args.total_steps:
         print(f"[finetune] {resume_dir} is already at step {start_step} >= --total_steps; nothing to do")
